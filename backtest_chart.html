@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>백테스트 차트 - 2026.02.20</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+KR:wght@300;500;700&display=swap');
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background: #0a0e1a;
+    color: #e0e6f0;
+    font-family: 'IBM Plex Sans KR', sans-serif;
+    min-height: 100vh;
+    padding: 32px 24px;
+  }
+  .header {
+    text-align: center;
+    margin-bottom: 40px;
+  }
+  .header h1 {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: #7eb3ff;
+    letter-spacing: 2px;
+    margin-bottom: 6px;
+  }
+  .header p {
+    font-size: 0.8rem;
+    color: #4a5568;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+  .charts-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  .chart-card {
+    background: #111827;
+    border: 1px solid #1e2d45;
+    border-radius: 12px;
+    padding: 24px;
+  }
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid #1e2d45;
+  }
+  .stock-info { display: flex; align-items: center; gap: 14px; }
+  .stock-name {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #e0e6f0;
+  }
+  .stock-code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    color: #4a5568;
+    background: #1a2235;
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+  .trade-info {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+  }
+  .trade-item {
+    text-align: right;
+  }
+  .trade-label {
+    font-size: 0.7rem;
+    color: #4a5568;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+  .trade-value {
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+  .profit-badge {
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 1rem;
+    font-weight: 600;
+  }
+  .reason-badge {
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-weight: 600;
+    border: 1px solid;
+  }
+  .chart-wrap { position: relative; height: 300px; }
+  .legend {
+    display: flex;
+    gap: 16px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    color: #6b7a99;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+  .legend-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+  }
+  .legend-line {
+    width: 20px; height: 2px;
+  }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>BACKTEST REPORT</h1>
+  <p>2026.02.20 &nbsp;|&nbsp; 매수: 9시 시가 &nbsp;|&nbsp; 손절: MA20 / -3.0% &nbsp;|&nbsp; 익절: +5.0%</p>
+</div>
+<div class="charts-grid" id="charts"></div>
+
+<script>
+const CHARTS_DATA = [{"name": "현대ADM", "code": "187660", "labels": ["15:0200", "15:0300", "15:0400", "15:0500", "15:0600", "15:0700", "15:0800", "15:0900", "15:1000", "15:1100", "15:1200", "15:1300", "15:1400", "15:1500", "15:1600", "15:1700", "15:1800", "15:1900", "15:2000", "15:2100", "15:2200", "15:2300", "15:2400", "15:2500", "15:2600", "15:2700", "15:2800", "15:2900", "15:3000", "15:3100", "15:3100", "15:3200", "15:3300", "15:3400", "15:3500", "15:3600", "15:3700", "15:3800", "15:3900", "15:4000", "15:4100", "15:4200", "15:4300", "15:4400", "15:4500", "15:4600", "15:4700", "15:4800", "15:4900", "15:5000", "15:5100", "15:5200", "15:5300", "15:5400", "15:5500", "15:5600", "15:5700", "15:5800", "15:5900", "16:0000"], "closes": [9130, 9130, 9180, 9190, 9270, 9220, 9150, 9230, 9230, 9270, 9280, 9260, 9200, 9140, 9280, 9450, 9390, 9290, 9290, 9290, 9290, 9290, 9290, 9290, 9290, 9290, 9290, 9290, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280, 9280], "ma20": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 9244.0, 9252.0, 9260.0, 9265.0, 9270.0, 9271.0, 9274.0, 9282.0, 9284.0, 9287.0, 9288.0, 9288.0, 9288.0, 9292.0, 9300.0, 9300.0, 9291.0, 9286.0, 9285.0, 9284.0, 9284.0, 9284.0, 9283.0, 9282.0, 9282.0, 9282.0, 9281.0, 9280.0, 9280.0, 9280.0, 9280.0, 9280.0, 9280.0, 9280.0, 9280.0, 9280.0, 9280.0, 9280.0, 9280.0, 9280.0], "buy_point": [9150, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "sell_point": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 9290, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "buy_price": 9150, "sell_price": 9290, "sell_reason": "장마감", "profit_pct": 1.53, "sign": "+", "color": "#00e676", "reason_color": "#90caf9", "stop_loss": 8875, "take_profit": 9607}, {"name": "흥아해운", "code": "003280", "labels": ["14:3300", "14:3400", "14:3500", "14:3600", "14:3700", "14:3800", "14:3900", "14:4000", "14:4100", "14:4200", "14:4300", "14:4400", "14:4500", "14:4600", "14:4700", "14:4800", "14:4900", "14:5000", "14:5100", "14:5200", "14:5300", "14:5400", "14:5500", "14:5600", "14:5700", "14:5800", "14:5900", "15:0000", "15:0100", "15:0200", "15:0200", "15:0300", "15:0400", "15:0500", "15:0600", "15:0700", "15:0800", "15:0900", "15:1000", "15:1100", "15:1200", "15:1300", "15:1400", "15:1500", "15:1600", "15:1700", "15:1800", "15:1900", "15:2000", "15:2100", "15:2200", "15:2300", "15:2400", "15:2500", "15:2600", "15:2700", "15:2800", "15:2900", "15:3000", "15:3100", "15:3100", "15:3200", "15:3300", "15:3400", "15:3500", "15:3600", "15:3700", "15:3800", "15:3900", "15:4000", "15:4100", "15:4200", "15:4300", "15:4400", "15:4500", "15:4600", "15:4700", "15:4800", "15:4900", "15:5000", "15:5100", "15:5200", "15:5300", "15:5400", "15:5500", "15:5600", "15:5700", "15:5800", "15:5900", "16:0000"], "closes": [1938, 1935, 1931, 1929, 1928, 1930, 1938, 1948, 1941, 1938, 1938, 1935, 1938, 1957, 1955, 1953, 1954, 1999, 2015, 1995, 1979, 1983, 1966, 1969, 1971, 1975, 1967, 1976, 1972, 1977, 1977, 1989, 1977, 1971, 1971, 1962, 1964, 1963, 1952, 1954, 1946, 1949, 1952, 1961, 1944, 1940, 1939, 1945, 1945, 1945, 1945, 1945, 1945, 1945, 1945, 1945, 1945, 1945, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938, 1938], "ma20": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1950.0, 1952.0, 1954.0, 1956.0, 1958.0, 1960.0, 1962.0, 1964.0, 1965.0, 1967.0, 1969.0, 1971.0, 1973.0, 1975.0, 1976.0, 1977.0, 1977.0, 1978.0, 1976.0, 1973.0, 1971.0, 1969.0, 1967.0, 1967.0, 1966.0, 1965.0, 1963.0, 1962.0, 1960.0, 1959.0, 1957.0, 1956.0, 1954.0, 1952.0, 1951.0, 1949.0, 1948.0, 1948.0, 1947.0, 1946.0, 1945.0, 1945.0, 1944.0, 1943.0, 1942.0, 1942.0, 1942.0, 1942.0, 1942.0, 1941.0, 1941.0, 1940.0, 1940.0, 1940.0, 1939.0, 1939.0, 1939.0, 1938.0, 1938.0, 1938.0, 1938.0, 1938.0, 1938.0, 1938.0, 1938.0, 1938.0, 1938.0, 1938.0, 1938.0, 1938.0], "buy_point": [1938, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "sell_point": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1971, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "buy_price": 1938, "sell_price": 1971, "sell_reason": "MA20손절", "profit_pct": 1.7, "sign": "+", "color": "#00e676", "reason_color": "#ff9800", "stop_loss": 1879, "take_profit": 2034}, {"name": "DB", "code": "012030", "labels": ["15:0200", "15:0300", "15:0400", "15:0500", "15:0600", "15:0700", "15:0800", "15:0900", "15:1000", "15:1100", "15:1200", "15:1300", "15:1400", "15:1500", "15:1600", "15:1700", "15:1800", "15:1900", "15:2000", "15:2100", "15:2200", "15:2300", "15:2400", "15:2500", "15:2600", "15:2700", "15:2800", "15:2900", "15:3000", "15:3100", "15:3100", "15:3200", "15:3300", "15:3400", "15:3500", "15:3600", "15:3700", "15:3800", "15:3900", "15:4000", "15:4100", "15:4200", "15:4300", "15:4400", "15:4500", "15:4600", "15:4700", "15:4800", "15:4900", "15:5000", "15:5100", "15:5200", "15:5300", "15:5400", "15:5500", "15:5600", "15:5700", "15:5800", "15:5900", "16:0000"], "closes": [1946, 1948, 1951, 1947, 1948, 1948, 1950, 1949, 1946, 1946, 1960, 1963, 1962, 1959, 1956, 1964, 1960, 1956, 1956, 1956, 1956, 1956, 1956, 1956, 1956, 1956, 1956, 1956, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940, 1940], "ma20": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1954.0, 1954.0, 1954.0, 1955.0, 1955.0, 1956.0, 1956.0, 1956.0, 1957.0, 1956.0, 1956.0, 1955.0, 1954.0, 1953.0, 1952.0, 1951.0, 1950.0, 1949.0, 1948.0, 1947.0, 1946.0, 1946.0, 1945.0, 1944.0, 1943.0, 1942.0, 1942.0, 1941.0, 1940.0, 1940.0, 1940.0, 1940.0, 1940.0, 1940.0, 1940.0, 1940.0, 1940.0, 1940.0, 1940.0, 1940.0], "buy_point": [1949, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "sell_point": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1956, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "buy_price": 1949, "sell_price": 1956, "sell_reason": "장마감", "profit_pct": 0.36, "sign": "+", "color": "#00e676", "reason_color": "#90caf9", "stop_loss": 1890, "take_profit": 2046}];
+
+function buildChart(r, idx) {
+  const card = document.createElement('div');
+  card.className = 'chart-card';
+
+  const profitStyle = r.profit_pct >= 0
+    ? 'background:#0d2818;color:#00e676;'
+    : 'background:#2a0d0d;color:#ff5252;';
+
+  card.innerHTML = `
+    <div class="card-header">
+      <div class="stock-info">
+        <span class="stock-name">${r.name}</span>
+        <span class="stock-code">${r.code}</span>
+        <span class="reason-badge" style="color:${r.reason_color};border-color:${r.reason_color}20;background:${r.reason_color}10">${r.sell_reason}</span>
+      </div>
+      <div class="trade-info">
+        <div class="trade-item">
+          <div class="trade-label">매수가</div>
+          <div class="trade-value" style="color:#7eb3ff">${r.buy_price.toLocaleString()}원</div>
+        </div>
+        <div class="trade-item">
+          <div class="trade-label">매도가</div>
+          <div class="trade-value" style="color:#e0e6f0">${r.sell_price.toLocaleString()}원</div>
+        </div>
+        <div class="profit-badge" style="${profitStyle}">${r.sign}${r.profit_pct.toFixed(2)}%</div>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="chart_${idx}"></canvas></div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-line" style="background:#7eb3ff"></div>종가</div>
+      <div class="legend-item"><div class="legend-line" style="background:#f59e0b"></div>MA20</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#00e676"></div>매수</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#ff5252"></div>매도</div>
+      <div class="legend-item"><div class="legend-line" style="background:#ff525250;border-top:1px dashed #ff5252"></div>손절선 (${r.stop_loss.toLocaleString()})</div>
+      <div class="legend-item"><div class="legend-line" style="background:#00e67650;border-top:1px dashed #00e676"></div>익절선 (${r.take_profit.toLocaleString()})</div>
+    </div>
+  `;
+  document.getElementById('charts').appendChild(card);
+
+  const stopArr  = new Array(r.labels.length).fill(r.stop_loss);
+  const tpArr    = new Array(r.labels.length).fill(r.take_profit);
+
+  new Chart(document.getElementById(`chart_${idx}`), {
+    type: 'line',
+    data: {
+      labels: r.labels,
+      datasets: [
+        {
+          label: '종가',
+          data: r.closes,
+          borderColor: '#7eb3ff',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.1,
+          fill: false,
+          order: 3,
+        },
+        {
+          label: 'MA20',
+          data: r.ma20,
+          borderColor: '#f59e0b',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: false,
+          spanGaps: true,
+          order: 2,
+        },
+        {
+          label: '손절선',
+          data: stopArr,
+          borderColor: '#ff525260',
+          borderWidth: 1,
+          borderDash: [4,4],
+          pointRadius: 0,
+          fill: false,
+          order: 4,
+        },
+        {
+          label: '익절선',
+          data: tpArr,
+          borderColor: '#00e67660',
+          borderWidth: 1,
+          borderDash: [4,4],
+          pointRadius: 0,
+          fill: false,
+          order: 4,
+        },
+        {
+          label: '매수',
+          data: r.buy_point,
+          borderColor: '#00e676',
+          backgroundColor: '#00e676',
+          pointRadius: r.buy_point.map(v => v ? 8 : 0),
+          pointStyle: 'triangle',
+          showLine: false,
+          order: 1,
+        },
+        {
+          label: '매도',
+          data: r.sell_point,
+          borderColor: '#ff5252',
+          backgroundColor: '#ff5252',
+          pointRadius: r.sell_point.map(v => v ? 8 : 0),
+          pointStyle: 'triangle',
+          rotation: 180,
+          showLine: false,
+          order: 1,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1a2235',
+          borderColor: '#2a3a55',
+          borderWidth: 1,
+          callbacks: {
+            label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y?.toLocaleString()}원`
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: {
+            color: '#3a4a66',
+            maxTicksLimit: 12,
+            font: { family: 'IBM Plex Mono', size: 10 }
+          },
+          grid: { color: '#111827' }
+        },
+        y: {
+          ticks: {
+            color: '#3a4a66',
+            font: { family: 'IBM Plex Mono', size: 10 },
+            callback: v => v.toLocaleString()
+          },
+          grid: { color: '#1a2235' }
+        }
+      }
+    }
+  });
+}
+
+CHARTS_DATA.forEach((r, i) => buildChart(r, i));
+</script>
+</body>
+</html>
