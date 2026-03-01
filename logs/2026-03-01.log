@@ -753,3 +753,15 @@
 [18:45:27] [ERROR] [order] [462330] 매도 주문 응답 없음
 [18:45:27] [ERROR] [monitor] [KODEX 2차전지산업레버리지] ❌ 장마감 청산 매도 실패 | 응답 없음
 [18:45:32] [INFO] [main] 👋 자동매매 프로그램 종료
+[19:22:37] [INFO] [price] 거래량 순위 조회 완료: 4개 종목 (등락률 필터 후)
+[19:22:38] [WARNING] [chart] [011930] 분봉 데이터 부족
+[19:22:39] [ERROR] [price] [011930] 호가 조회 오류: 500 Server Error: Internal Server Error for url: https://openapivts.koreainvestment.com:29443/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn?fid_cond_mrkt_div_code=J&fid_input_iscd=011930
+[19:22:39] [INFO] [strategy] [신성이엔지] ✅ 조건 통과: 등락률정상(14.8%), 전일거래대금(2,008억), 거래량급증(확인불가-통과), 52주신고가(확인불가-통과), 시가총액(5,043억), 호가비율(확인불가-통과), 체결강도(100.0%)
+[19:22:40] [WARNING] [chart] [038500] 분봉 데이터 부족
+[19:22:40] [DEBUG] [strategy] [삼표시멘트] 탈락: 매수세약(0.0%)
+[19:22:41] [WARNING] [chart] [012200] 분봉 데이터 부족
+[19:22:41] [ERROR] [price] [012200] 호가 조회 오류: 500 Server Error: Internal Server Error for url: https://openapivts.koreainvestment.com:29443/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn?fid_cond_mrkt_div_code=J&fid_input_iscd=012200
+[19:22:41] [INFO] [strategy] [계양전기] ✅ 조건 통과: 등락률정상(11.0%), 전일거래대금(1,778억), 거래량급증(확인불가-통과), 52주신고가(확인불가-통과), 시가총액(2,494억), 호가비율(확인불가-통과), 체결강도(100.0%)
+[19:22:42] [WARNING] [chart] [066980] 분봉 데이터 부족
+[19:22:43] [DEBUG] [strategy] [한성크린텍] 탈락: 전일거래대금부족(288억), 매수세약(0.0%)
+[19:22:43] [INFO] [strategy] 조건 검색: 4개 → 필터 후 2개 후보
