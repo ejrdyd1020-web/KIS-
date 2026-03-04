@@ -35,9 +35,6 @@ ADVANCED_FILTER = {
     "volume_surge_ratio"    : 2.0,    # 전일 대비 누적거래량 2배 이상
     "min_volume_ratio_1min" : 500.0,  # 직전 1분봉 대비 현재 1분봉 거래량 500% 이상
 
-    # 52주 신고가 근접
-    "week52_high_pct"       : 98.0,
-
     # 시가총액 (억원)
     "min_market_cap"        : 100,
     "max_market_cap"        : 99_999_999,
@@ -48,11 +45,22 @@ ADVANCED_FILTER = {
     # 당일 과열 제외
     "max_day_change_rate"   : 25.0,
 
-    # 매수/매도 호가 잔량 비율
-    "bid_ask_ratio"         : 55.0,
-
-    # 체결강도 (HTS 조건식 F 기준)
+    # 체결강도
     "min_execution_strength": 100.0,  # 체결강도 100% 이상
+}
+
+# ── 트레일링 스탑 설정 ───────────────────────────────────────
+TRAILING_STOP = {
+    "min_profit_pct" : 3.0,   # 수익이 3% 이상 났을 때부터 작동
+    "drop_pct"       : 2.0,   # 고점 대비 2% 하락 시 청산
+}
+
+# ── 스토캐스틱 청산 설정 ─────────────────────────────────────
+STOCH_EXIT = {
+    "k_period"      : 12,    # Fast %K 기간
+    "smooth_period" : 5,     # Slow %K 스무딩
+    "d_period"      : 5,     # %D 기간
+    "overbought"    : 80,    # 과열권 기준 (80 이상에서 데드크로스 시 청산)
 }
 
 # ── 시장 국면 필터 (1분봉 MA120 기준) ────────────────────────

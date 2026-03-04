@@ -1,34 +1,32 @@
-    # ============================================================
+# ============================================================
 #  strategy/condition.py  –  고급 조건 검색 + 자동 매수 전략
 #
 #  필터 조건:
 #    1. 등락률 7~25%
-#    2. 1분봉 거래량 500% 급증 (직전 1분봉 대비)
-#    3. 52주 신고가 근접 (최고가 98% 이상)
+#    2. 전일 거래대금 300억 이상
+#    3. 거래량 급증 (전일 2배 OR 1분봉 500%)
 #    4. 시가총액 100억 이상
-#    5. 거래대금 300억 이상
-#    6. 당일 25% 이상 상승 종목 제외
-#    7. 매수호가 잔량 55% 이상
-#    8. 체결강도 100% 이상
-#    9. 스토캐스틱 슬로우 매수 신호
+#    5. 체결강도 100% 이상
+#    6. 스토캐스틱 슬로우 매수 신호 (침체권 골든크로스)
+#    7. 1분봉 MA120 상승장 확인
 #
-#  시장 국면 필터 (신규):
-#    - 종목 자체 1분봉 MA120 기준
-#    - 현재가 > MA120  → 상승장 → 매매 유지
-#    - 현재가 < MA120  → 하락장 → 즉시 전량 시장가 손절 + 매매 중단
-#    - 현재가 > MA120 회복 시 → 매매 재개
+#  ※ 제거된 조건:
+#    - 52주 신고가 98% → 후보 종목 너무 적음
+#    - 매수호가 55%    → API 오류 시 무조건 탈락
+#
+#  최종 3종목 선정 기준 (점수제):
+#    - 거래량 급증도 40% + 등락률 30% + 체결강도 30%
 # ============================================================
 
 import time
 import sys
 import os
-import logging
 import pandas as pd
 from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from api.price    import get_fluctuation_rank, get_current_price, get_asking_price
+from api.price    import get_fluctuation_rank, get_current_price
 from api.chart    import get_volume_ratio_1min
 from api.order    import buy_market, sell_market, calc_buy_qty
 from api.balance  import get_deposit
@@ -49,10 +47,8 @@ logger = get_logger("strategy")
 _bought_codes: set[str] = set()
 
 
-
-
 # ══════════════════════════════════════════
-# [신규] 1분봉 MA120 시장 국면 판단
+# 1분봉 MA120 시장 국면 판단
 # ══════════════════════════════════════════
 
 def get_ma120(code: str) -> float | None:
@@ -63,13 +59,13 @@ def get_ma120(code: str) -> float | None:
     """
     try:
         from api.chart import get_minute_chart_bulk
-        candles = get_minute_chart_bulk(code, need=125)  # 여유있게 125개
+        candles = get_minute_chart_bulk(code, need=125)
         if len(candles) < 120:
             logger.warning(f"[{code}] MA120 계산 불가: 캔들 {len(candles)}개 (최소 120개 필요)")
             return None
 
         df = pd.DataFrame(candles)
-        df = df.iloc[::-1].reset_index(drop=True)  # 최신이 마지막 행
+        df = df.iloc[::-1].reset_index(drop=True)
         ma120 = df['close'].rolling(window=120).mean().iloc[-1]
         return float(ma120) if not pd.isna(ma120) else None
 
@@ -81,13 +77,12 @@ def get_ma120(code: str) -> float | None:
 def check_market_phase(code: str, current_price: float) -> bool:
     """
     1분봉 MA120 기준으로 시장 국면 판단.
-
     Returns:
         True  → 상승장 (현재가 >= MA120)
         False → 하락장 (현재가 < MA120)
     """
     if not MA120_MARKET_FILTER.get("enabled", True):
-        return True  # 비활성화 시 항상 상승장으로 처리
+        return True
 
     ma120 = get_ma120(code)
     if ma120 is None:
@@ -100,20 +95,16 @@ def check_market_phase(code: str, current_price: float) -> bool:
 
 
 def liquidate_single_position(code: str, info: dict, reason: str = "MA120 이탈"):
-    """
-    해당 종목 1개만 즉시 시장가 전량 매도.
-    다른 보유 종목에는 영향 없음.
-    """
+    """해당 종목 1개만 즉시 시장가 전량 매도. 다른 보유 종목에는 영향 없음."""
     qty  = info.get("qty", 0)
     name = info.get("name", code)
     if qty <= 0:
         return
-
     try:
         result = sell_market(code, qty)
         if result.get("success"):
             remove_position(code)
-            logger.info(f"[{name}({code})] ✅ MA120 이탈 손절 완료 ({qty}주) — {reason}")
+            logger.info(f"[{name}({code})] ✅ MA120 이탈 손절 완료 ({qty}주)")
         else:
             logger.error(f"[{name}({code})] ❌ 손절 실패: {result.get('msg')}")
     except Exception as e:
@@ -121,15 +112,7 @@ def liquidate_single_position(code: str, info: dict, reason: str = "MA120 이탈
 
 
 def monitor_market_phase():
-    """
-    보유 종목별로 MA120 이탈 여부를 개별 감시.
-
-    - MA120 이탈 종목 → 해당 종목만 즉시 시장가 손절
-    - 다른 보유 종목은 영향 없음, 매매도 계속 진행
-    - 이탈 후 회복(현재가 >= MA120) 시 → 재매수 가능 상태로 전환
-
-    ※ run_strategy 루프 내에서 주기적으로 호출.
-    """
+    """보유 종목별 MA120 이탈 여부 개별 감시. 이탈 종목만 즉시 손절."""
     positions = get_positions()
     if not positions:
         return
@@ -146,17 +129,14 @@ def monitor_market_phase():
         name    = info.get("name", code)
 
         if not is_bull:
-            # 이 종목만 손절 — 다른 종목은 그대로
             logger.warning(f"🔴 [{name}({code})] MA120 이탈 → 해당 종목만 즉시 손절")
             liquidate_single_position(code, info, reason="MA120 이탈")
-            # 재매수 방지 해제 (원하면 _bought_codes 에 추가해 당일 재진입 막을 수 있음)
-            # _bought_codes.add(code)  # 당일 재매수 차단 원할 경우 주석 해제
         else:
             logger.debug(f"[{name}({code})] MA120 상승장 유지 ✅")
 
 
 # ══════════════════════════════════════════
-# 스토캐스틱 슬로우 계산 함수
+# 스토캐스틱 슬로우 계산
 # ══════════════════════════════════════════
 
 def calculate_stochastic_slow(df, k_period=12, d_period=5, smooth_period=5):
@@ -170,6 +150,12 @@ def calculate_stochastic_slow(df, k_period=12, d_period=5, smooth_period=5):
 
 
 def check_stochastic_signal(code: str) -> str:
+    """
+    스토캐스틱 슬로우 기반 매수/매도/관망 신호 반환
+      BUY  - 침체권(20↓)에서 골든크로스
+      SELL - 과열권(80↑)에서 데드크로스
+      HOLD - 그 외
+    """
     try:
         from api.chart import get_minute_chart
         candles = get_minute_chart(code, count=100)
@@ -200,7 +186,7 @@ def check_stochastic_signal(code: str) -> str:
 
 
 # ══════════════════════════════════════════
-# 기존 함수들
+# 조건 검색
 # ══════════════════════════════════════════
 
 def is_scan_time() -> bool:
@@ -209,14 +195,24 @@ def is_scan_time() -> bool:
 
 
 def check_advanced_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
-    """고급 필터 체크 (기존 1~8번 유지 + 9번 MA120 필터 강화)"""
+    """
+    고급 필터 체크
+      1. 당일 과열 제외 (25% 미만)
+      2. 전일 거래대금 300억 이상
+      3. 거래량 급증 (전일 2배 OR 1분봉 500%)
+      4. 시가총액 100억 이상
+      5. 체결강도 100% 이상
+      6. 스토캐스틱 골든크로스 (침체권)
+      7. 1분봉 MA120 상승장 확인
+    """
     passed = []
     failed = []
 
     detail = get_current_price(code)
-    if not detail: return False, []
+    if not detail:
+        return False, []
 
-    price = basic.get("price", 0)
+    price       = basic.get("price", 0)
     volume      = basic.get("volume", 0)
     change_rate = basic.get("change_rate", 0)
 
@@ -248,25 +244,11 @@ def check_advanced_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
     elif vol_daily_ok:
         passed.append(f"거래량급증(전일{surge_ratio:.1f}배)")
     elif vol_ratio_1min == 0.0:
-        if vol_daily_ok:
-            passed.append(f"거래량급증(전일{surge_ratio:.1f}배)")
-        else:
-            passed.append("거래량급증(확인불가-통과)")
+        passed.append("거래량급증(확인불가-통과)")
     else:
         failed.append(f"거래량부족(전일{surge_ratio:.1f}배/1분봉{vol_ratio_1min:.0f}%)")
 
-    # ── 4. 52주 신고가 근접 ───────────────────────────────────
-    week52_high = detail.get("week52_high", 0)
-    if week52_high > 0:
-        high_ratio = price / week52_high * 100
-        if high_ratio >= ADVANCED_FILTER["week52_high_pct"]:
-            passed.append(f"52주신고가({high_ratio:.1f}%)")
-        else:
-            failed.append(f"52주신고가미달({high_ratio:.1f}%)")
-    else:
-        passed.append("52주신고가(확인불가-통과)")
-
-    # ── 5. 시가총액 100억 이상 ────────────────────────────────
+    # ── 4. 시가총액 100억 이상 ────────────────────────────────
     market_cap = detail.get("market_cap", 0)
     if market_cap > 0:
         if market_cap >= ADVANCED_FILTER["min_market_cap"]:
@@ -276,18 +258,7 @@ def check_advanced_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
     else:
         passed.append("시가총액(확인불가-통과)")
 
-    # ── 6. 매수/매도 호가 잔량 비율 ──────────────────────────
-    asking = get_asking_price(code)
-    if asking:
-        bid_ratio = asking.get("bid_ratio", 50.0)
-        if bid_ratio >= ADVANCED_FILTER["bid_ask_ratio"]:
-            passed.append(f"매수우세({bid_ratio:.1f}%)")
-        else:
-            failed.append(f"매수세약({bid_ratio:.1f}%)")
-    else:
-        passed.append("호가비율(확인불가-통과)")
-
-    # ── 7. 체결강도 100% 이상 ────────────────────────────────
+    # ── 5. 체결강도 100% 이상 ────────────────────────────────
     execution_strength = detail.get("exec_strength", 0.0)
     if execution_strength > 0:
         if execution_strength >= ADVANCED_FILTER["min_execution_strength"]:
@@ -297,15 +268,14 @@ def check_advanced_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
     else:
         passed.append("체결강도(확인불가-통과)")
 
-# ── 8. 스토캐스틱 매수 신호 (K값 25 이하 탈출로 정교화) ──────
+    # ── 6. 스토캐스틱 골든크로스 ─────────────────────────────
     stoch_sig = check_stochastic_signal(code)
     if stoch_sig == "BUY":
         passed.append("스토캐스틱(침체탈출)")
     else:
         failed.append(f"스토캐스틱(관망/{stoch_sig})")
 
-    # ── 9. [중요] 1분봉 MA120 상승장 확인 (하락장 진입 절대 차단) ──
-    # 현재가가 120이평선보다 낮으면 매수 후보에서 즉시 탈락시킵니다.
+    # ── 7. 1분봉 MA120 상승장 확인 ───────────────────────────
     is_bull = check_market_phase(code, price)
     if is_bull:
         passed.append("MA120(상승장)")
@@ -313,6 +283,9 @@ def check_advanced_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
         failed.append("MA120(하락장-진입불가)")
 
     all_passed = len(failed) == 0
+    if failed:
+        logger.debug(f"[{basic.get('name')}] 탈락: {', '.join(failed)}")
+
     return all_passed, passed
 
 
@@ -349,10 +322,22 @@ def filter_candidates(stocks: list[dict]) -> list[dict]:
 
 
 def score_candidate(stock: dict) -> float:
-    """등락률 + 거래량 복합 점수 (각 50%)"""
-    rate   = stock.get("change_rate", 0)
-    volume = stock.get("volume", 0)
-    return round(min(rate / 25.0, 1.0) * 50 + min(volume / 1_000_000, 1.0) * 50, 2)
+    """
+    최종 종목 선정 점수 계산
+      - 거래량 급증도 40% : 가장 중요한 모멘텀 지표
+      - 등락률        30% : 상승 강도
+      - 체결강도      30% : 매수세 강도
+    """
+    rate          = stock.get("change_rate", 0)
+    volume        = stock.get("volume", 0)
+    exec_strength = stock.get("exec_strength", 100.0)
+
+    rate_score     = min(rate / 25.0, 1.0) * 100
+    volume_score   = min(volume / 1_000_000, 1.0) * 100
+    strength_score = min(exec_strength / 200.0, 1.0) * 100
+
+    score = (volume_score * 0.4) + (rate_score * 0.3) + (strength_score * 0.3)
+    return round(score, 2)
 
 
 def execute_buy(stock: dict) -> bool:
@@ -390,13 +375,7 @@ def execute_buy(stock: dict) -> bool:
 
 
 def run_strategy(stop_event=None):
-    """
-    조건 검색 + 매수 전략 루프 (30초마다)
-
-    루프마다:
-      1. 보유 종목 MA120 국면 감시 (하락 시 전량 손절 + 매매 중단)
-      2. 매매 가능 상태일 때만 신규 조건 검색 + 매수
-    """
+    """조건 검색 + 매수 전략 루프 (30초마다)"""
     SCAN_INTERVAL = 30
     logger.info("🔍 조건 검색 전략 시작 (1분봉 MA120 개별 종목 손절 필터 활성)")
 
@@ -416,7 +395,7 @@ def run_strategy(stop_event=None):
             time.sleep(SCAN_INTERVAL)
             continue
 
-        # ── Step 2: 조건 검색 + 매수 ─────────────────────────
+        # ── Step 2: 조건 검색 + 상위 3종목 매수 ─────────────
         stocks = get_fluctuation_rank(top_n=30)
         if not stocks:
             time.sleep(SCAN_INTERVAL)
@@ -454,18 +433,19 @@ def print_candidates():
 
     candidates.sort(key=lambda x: score_candidate(x), reverse=True)
 
-    print(f"{'='*75}")
-    print(f"  🔍 매수 후보 종목 ({len(candidates)}개)")
-    print(f"{'='*75}")
+    print(f"{'='*80}")
+    print(f"  🔍 매수 후보 종목 ({len(candidates)}개) — 상위 3개 매수 대상")
+    print(f"{'='*80}")
     print(f"  {'점수':>5} {'종목명':<14} {'현재가':>8} {'등락률':>7} {'거래대금':>8}  통과 조건")
-    print(f"  {'-'*70}")
-    for s in candidates[:10]:
+    print(f"  {'-'*75}")
+    for i, s in enumerate(candidates[:10]):
         score        = score_candidate(s)
         trade_amount = int(s['price'] * s['volume'] / 100_000_000)
         filters      = ", ".join(s.get("passed_filters", []))
-        print(f"  {score:>5.1f} {s['name']:<14} {s['price']:>8,} "
+        marker       = "★" if i < 3 else " "
+        print(f"  {marker}{score:>5.1f} {s['name']:<14} {s['price']:>8,} "
               f"{s['change_rate']:>+6.2f}% {trade_amount:>7,}억  {filters}")
-    print(f"{'='*75}\n")
+    print(f"{'='*80}\n")
 
 
 if __name__ == "__main__":
