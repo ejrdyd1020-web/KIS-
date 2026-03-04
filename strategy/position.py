@@ -13,7 +13,8 @@ import time
 import logging
 from datetime import datetime
 
-from strategy.condition import check_stochastic_signal, get_ma120
+# ※ check_stochastic_signal, get_ma120 은 순환 참조 방지를 위해
+#   각 함수 내부에서 import 합니다.
 from api.price  import get_current_price
 from api.order  import sell_market
 from config     import STOP_LOSS_PCT, PRICE_CHECK_SEC, MARKET_CLOSE
@@ -127,6 +128,7 @@ def check_position(pos: dict) -> str:
         return "hard_stop"
 
     # ── [2순위] MA120 이탈 ─────────────────────────────────────
+    from strategy.condition import get_ma120
     ma120 = get_ma120(code)
     if ma120 and cur_price < ma120:
         logger.info(
@@ -148,6 +150,7 @@ def check_position(pos: dict) -> str:
             return "trailing_stop"
 
     # ── [4순위] 스토캐스틱 매도 신호 ─────────────────────────────
+    from strategy.condition import check_stochastic_signal
     if check_stochastic_signal(code) == "SELL":
         logger.info(f"[{pos['name']}] 🟣 스토캐스틱 과열 이탈 매도")
         return "stoch_sell"

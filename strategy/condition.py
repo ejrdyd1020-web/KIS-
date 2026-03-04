@@ -30,7 +30,7 @@ from api.price    import get_fluctuation_rank, get_current_price
 from api.chart    import get_volume_ratio_1min
 from api.order    import buy_market, sell_market, calc_buy_qty
 from api.balance  import get_deposit
-from monitor.position import add_position, get_positions, remove_position
+from strategy.position import add_position, get_positions, remove_position
 from utils.logger import get_logger
 from config import (
     ORDER_AMOUNT,
