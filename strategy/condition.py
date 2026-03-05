@@ -395,8 +395,21 @@ def run_strategy(stop_event=None):
             time.sleep(SCAN_INTERVAL)
             continue
 
-        # ── Step 2: 조건 검색 + 상위 3종목 매수 ─────────────
+        # ── Step 2: watchlist 우선 감시 (장 전 선정 종목) ────
+        from premarket import load_watchlist
+        watchlist = load_watchlist()
+        if watchlist:
+            wl_codes = {s["code"] for s in watchlist}
+            logger.info(f"📋 watchlist {len(watchlist)}개 종목 우선 감시 중")
+        else:
+            wl_codes = set()
+
+        # ── Step 3: 조건 검색 + 상위 3종목 매수 ─────────────
         stocks = get_fluctuation_rank(top_n=30)
+
+        # watchlist 종목을 맨 앞으로 정렬
+        if wl_codes:
+            stocks.sort(key=lambda x: (0 if x["code"] in wl_codes else 1))
         if not stocks:
             time.sleep(SCAN_INTERVAL)
             continue
