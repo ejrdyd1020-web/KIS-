@@ -15,12 +15,25 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+# [추가] 현재 파일이 있는 경로를 시스템 경로에 추가하여 모듈 인식 문제 해결
+current_path = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_path)
+
+# .env 로드 (상위 폴더에 있는 경우를 대비)
+load_dotenv(os.path.join(current_path, ".env"))
 
 from auth                  import get_access_token
 from api.balance           import get_balance
-from monitor.position      import run_monitor, sync_positions_from_balance, print_positions
-from strategy.condition    import run_strategy, print_candidates
+
+# [수정] 경로 문제를 방지하기 위해 직접 임포트
+try:
+    from position          import run_monitor, sync_positions_from_balance, print_positions
+    from condition         import run_strategy, print_candidates
+except ImportError:
+    # 만약 폴더 구조가 strategy/ 안에 있다면 아래와 같이 시도
+    from strategy.position import run_monitor, sync_positions_from_balance, print_positions
+    from strategy.condition import run_strategy, print_candidates
+
 from utils.logger          import get_logger
 from config import MARKET_OPEN, MARKET_CLOSE, TOTAL_BUDGET
 
