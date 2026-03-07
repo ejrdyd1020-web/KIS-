@@ -84,9 +84,29 @@ def get_balance() -> dict:
             })
 
         summary = data.get("output2", [{}])[0]
+
+        # ── 매수 가능 금액 계산 ───────────────────────────────
+        # thdt_buy_able_amt : KIS가 직접 계산해주는 당일 매수가능금액
+        #                     D+0 예수금 + D+1 정산예정 + D+2 미결제 모두 포함
+        # dnca_tot_amt      : 순수 예수금(D+0)만 → 실제보다 적게 잡힘 (기존 문제)
+        # nxdy_excc_amt     : D+1 익일 정산 예정금액 (참고용으로만 노출)
+        buyable   = int(summary.get("thdt_buy_able_amt", 0))
+        d0        = int(summary.get("dnca_tot_amt", 0))
+        d1        = int(summary.get("nxdy_excc_amt", 0))
+
+        # thdt_buy_able_amt 가 0이면 API 미지원 계정 → fallback
+        deposit = buyable if buyable > 0 else d0
+
+        logger.debug(
+            f"매수가능금액: {deposit:,}원 "
+            f"(D+0 예수금: {d0:,} / D+1 정산예정: {d1:,} / KIS합산: {buyable:,})"
+        )
+
         return {
             "stocks"      : stocks,
-            "deposit"     : int(summary.get("dnca_tot_amt", 0)),
+            "deposit"     : deposit,          # 실제 매수가능금액 (D+2 포함)
+            "deposit_d0"  : d0,               # 순수 예수금 (참고용)
+            "deposit_d1"  : d1,               # D+1 정산예정 (참고용)
             "total_eval"  : int(summary.get("tot_evlu_amt", 0)),
             "total_profit": int(summary.get("evlu_pfls_smtl_amt", 0)),
         }
@@ -97,6 +117,30 @@ def get_balance() -> dict:
 
 
 def get_deposit() -> int:
-    """예수금(D+2) 빠른 조회"""
+    """
+    당일 매수가능금액 반환 (D+2 미결제 포함).
+
+    KIS API thdt_buy_able_amt 필드 사용.
+    → 당일 매도한 종목의 미결제 금액도 즉시 재매수에 사용 가능.
+    """
     result = get_balance()
     return result.get("deposit", 0)
+
+
+def get_deposit_detail() -> dict:
+    """
+    예수금 상세 조회 (디버깅 / 리포트용).
+
+    반환값:
+        {
+            "buyable" : 1_050_000,   # 실제 매수가능 (D+2 포함)
+            "d0"      : 800_000,     # 순수 예수금
+            "d1"      : 250_000,     # D+1 정산예정
+        }
+    """
+    result = get_balance()
+    return {
+        "buyable": result.get("deposit",     0),
+        "d0"     : result.get("deposit_d0",  0),
+        "d1"     : result.get("deposit_d1",  0),
+    }
