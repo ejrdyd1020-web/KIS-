@@ -35,7 +35,7 @@ except ImportError:
     from strategy.condition import run_strategy, print_candidates
 
 from utils.logger          import get_logger
-from config import MARKET_OPEN, MARKET_CLOSE, TOTAL_BUDGET
+from config import MARKET_OPEN, MARKET_CLOSE, BUDGET
 
 logger = get_logger("main")
 
@@ -52,19 +52,22 @@ def wait_for_market_open():
 
 def print_startup_info():
     """시작 시 계좌 정보 출력"""
+    data    = get_balance()
+    deposit = data.get("deposit", 0) if data else 0
+    reserve = int(deposit * BUDGET["reserve_ratio"])
+    pool    = deposit - reserve
+
     print(f"""
 ╔══════════════════════════════════════════════════════╗
 ║         KIS 단타 자동매매 프로그램 시작              ║
 ╚══════════════════════════════════════════════════════╝
   시작 시간  : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-  운용 예산  : {TOTAL_BUDGET:,}원
   장 운영    : {MARKET_OPEN} ~ {MARKET_CLOSE}
 """)
 
-    data = get_balance()
     if data:
-        print(f"  💰 현재 예수금 : {data['deposit']:,}원")
-        print(f"  📦 보유 종목   : {len(data['stocks'])}개")
+        print(f"  💰 매수가능금액 : {deposit:,}원  (예비비 {reserve:,}원 제외 → 운용 {pool:,}원)")
+        print(f"  📦 보유 종목    : {len(data.get('stocks', []))}개")
         print()
 
 
@@ -85,12 +88,24 @@ def main():
     sync_positions_from_balance()
     print_positions()
 
-    # ── 4. 장 시작 대기 ───────────────────────────────────────
+    # ── 4. 장전 스캔 (08:30~09:00 구간이면 즉시 실행) ─────────
+    now = datetime.now().strftime("%H:%M")
+    if "08:30" <= now < MARKET_OPEN:
+        logger.info("📋 장전 스캔 실행 중...")
+        try:
+            from premarket import run_premarket_screening, save_watchlist
+            watchlist = run_premarket_screening(top_n=10)
+            if watchlist:
+                save_watchlist(watchlist)
+        except Exception as e:
+            logger.error(f"장전 스캔 오류: {e}")
+
+    # ── 5. 장 시작 대기 ───────────────────────────────────────
     now = datetime.now().strftime("%H:%M")
     if now < MARKET_OPEN:
         wait_for_market_open()
 
-    # ── 5. 스레드 시작 ────────────────────────────────────────
+    # ── 6. 스레드 시작 ────────────────────────────────────────
     stop_event = threading.Event()
 
     # 조건 검색 + 매수 스레드
@@ -114,31 +129,18 @@ def main():
 
     logger.info("✅ 자동매매 시작! (종료: Ctrl+C)")
 
-    # ── 6. 메인 루프 ──────────────────────────────────────────
+    # ── 7. 메인 루프 ──────────────────────────────────────────
     try:
         while True:
             now = datetime.now().strftime("%H:%M")
 
-            # 장 마감 후 자동 종료
+            # 장 마감 → stop_event 세팅 후 monitor 스레드가 강제청산 처리
+            # ※ 중복 매도 방지: main.py에서 직접 sell_market 호출하지 않음
+            #   position.py run_monitor()의 "market_close" 신호가 청산 담당
             if now >= MARKET_CLOSE:
-                logger.info(f"⏰ 장 마감 ({MARKET_CLOSE}) - 보유 포지션 전량 청산 중...")
+                logger.info(f"⏰ 장 마감 ({MARKET_CLOSE}) → 모니터 스레드 청산 대기 중...")
                 stop_event.set()
-                # 보유 포지션 전량 시장가 매도
-                from api.balance import get_balance
-                from api.order import sell_market
-                balance = get_balance()
-                for stock in balance.get("stocks", []):
-                    code = stock["code"]
-                    name = stock["name"]
-                    qty  = stock["qty"]
-                    if qty > 0:
-                        logger.info(f"[{name}] 장마감 청산 매도: {qty}주")
-                        result = sell_market(code, qty)
-                        if result.get("success"):
-                            logger.info(f"[{name}] ✅ 청산 완료")
-                        else:
-                            logger.warning(f"[{name}] ❌ 청산 실패: {result.get('msg')}")
-                time.sleep(5)
+                time.sleep(10)   # monitor 스레드 청산 완료 대기
                 break
 
             # 5분마다 포지션 현황 출력

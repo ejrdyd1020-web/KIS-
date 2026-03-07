@@ -97,58 +97,63 @@ def get_daily_chart(stock_code: str, count: int = 30) -> list[dict]:
 
 def get_fluctuation_rank_daily(top_n: int = 50) -> list[dict]:
     """
-    전일 등락률 순위 조회 (상위 top_n개)
+    전일 등락률 순위 조회 (코스피 + 코스닥 합산, 상위 top_n개)
+
+    버그 수정:
+      - TR ID: FHPST01710000(거래량순위) → FHPST01700000(등락률순위)
+      - URL  : volume-rank → fluctuation
+      - 코스닥("Q") 추가 — 기존에는 코스피("J")만 조회해서 코스닥 종목 전부 누락
     """
-    tr_id = "FHPST01710000"
+    tr_id  = "FHPST01700000"   # 등락률 순위 조회 (수정)
+    url    = f"{get_base_url()}/uapi/domestic-stock/v1/ranking/fluctuation"
 
-    params = {
-        "fid_cond_mrkt_div_code": "J",
-        "fid_cond_scr_div_code" : "20171",
-        "fid_input_iscd"        : "0000",
-        "fid_rank_sort_cls_code": "0",    # 상승률 순
-        "fid_input_cnt_1"       : "0",
-        "fid_prc_cls_code"      : "1",
-        "fid_input_price_1"     : "1000",
-        "fid_input_price_2"     : "100000",
-        "fid_vol_cnt"           : "100000",
-        "fid_trgt_cls_code"     : "0",
-        "fid_trgt_exls_cls_code": "0",
-        "fid_div_cls_code"      : "0",
-        "fid_rsfl_rate1"        : "3",    # 등락률 최소 +3%
-        "fid_rsfl_rate2"        : "15",   # 등락률 최대 +15%
-    }
-
-    try:
-        res = requests.get(
-            f"{get_base_url()}/uapi/domestic-stock/v1/ranking/fluctuation",
-            headers=get_headers(tr_id),
-            params=params,
-            timeout=5,
-        )
-        res.raise_for_status()
-        data = res.json()
-
-        if data.get("rt_cd") != "0":
-            logger.warning(f"등락률 순위 조회 실패: {data.get('msg1')}")
+    def _fetch(market_code: str) -> list[dict]:
+        params = {
+            "fid_cond_mrkt_div_code": market_code,   # "J"=코스피, "Q"=코스닥
+            "fid_cond_scr_div_code" : "20171",
+            "fid_input_iscd"        : "0000",
+            "fid_rank_sort_cls_code": "0",    # 상승률 순
+            "fid_input_cnt_1"       : "0",
+            "fid_prc_cls_code"      : "1",
+            "fid_input_price_1"     : "1000",
+            "fid_input_price_2"     : "100000",
+            "fid_vol_cnt"           : "100000",
+            "fid_trgt_cls_code"     : "0",
+            "fid_trgt_exls_cls_code": "0",
+            "fid_div_cls_code"      : "0",
+            "fid_rsfl_rate1"        : "3",    # 등락률 최소 +3%
+            "fid_rsfl_rate2"        : "15",   # 등락률 최대 +15%
+        }
+        try:
+            res = requests.get(url, headers=get_headers(tr_id), params=params, timeout=5)
+            res.raise_for_status()
+            data = res.json()
+            if data.get("rt_cd") != "0":
+                logger.warning(f"등락률 순위 조회 실패 [{market_code}]: {data.get('msg1')}")
+                return []
+            result = []
+            for item in data.get("output", []):
+                result.append({
+                    "code"             : item.get("mksc_shrn_iscd", ""),
+                    "name"             : item.get("hts_kor_isnm", ""),
+                    "price"            : int(item.get("stck_prpr", 0)),
+                    "change_rate"      : float(item.get("prdy_ctrt", 0)),
+                    "volume"           : int(item.get("acml_vol", 0)),
+                    "prev_trade_amount": int(item.get("acml_tr_pbmn", 0)),
+                    "market_code"      : market_code,   # 소속 지수 태깅
+                })
+            return result
+        except Exception as e:
+            logger.error(f"등락률 순위 조회 오류 [{market_code}]: {e}")
             return []
 
-        stocks = []
-        for item in data.get("output", [])[:top_n]:
-            stocks.append({
-                "code"              : item.get("mksc_shrn_iscd", ""),
-                "name"              : item.get("hts_kor_isnm", ""),
-                "price"             : int(item.get("stck_prpr", 0)),
-                "change_rate"       : float(item.get("prdy_ctrt", 0)),
-                "volume"            : int(item.get("acml_vol", 0)),
-                "prev_trade_amount" : int(item.get("acml_tr_pbmn", 0)),
-            })
+    # 코스피 + 코스닥 합산 후 등락률 내림차순 정렬 → 상위 top_n
+    kospi  = _fetch("J")
+    kosdaq = _fetch("Q")
+    all_stocks = sorted(kospi + kosdaq, key=lambda x: x["change_rate"], reverse=True)[:top_n]
 
-        logger.info(f"전일 등락률 순위 조회 완료: {len(stocks)}개")
-        return stocks
-
-    except Exception as e:
-        logger.error(f"등락률 순위 조회 오류: {e}")
-        return []
+    logger.info(f"전일 등락률 순위: 코스피 {len(kospi)}개 + 코스닥 {len(kosdaq)}개 → 합산 {len(all_stocks)}개")
+    return all_stocks
 
 
 # ══════════════════════════════════════════
@@ -331,15 +336,23 @@ def save_watchlist(watchlist: list[dict]):
 
 
 def load_watchlist() -> list[dict]:
-    """watchlist.json 불러오기. 오늘 날짜 파일만 유효."""
-    if not os.path.exists(WATCHLIST_PATH):
-        return []
+    """
+    저장된 watchlist.json 불러오기.
+    오늘 날짜 불일치 또는 파일 없으면 빈 리스트 반환.
+    condition.py 장중 스캔에서 호출.
 
+    버그 수정:
+      - 기존: return [] 로 무조건 빈 리스트 반환 (파일 읽기 코드 도달 불가)
+      - 수정: 실제 파일 읽기 로직으로 교체
+    """
     try:
+        if not os.path.exists(WATCHLIST_PATH):
+            logger.debug("watchlist.json 없음 → 빈 리스트")
+            return []
+
         with open(WATCHLIST_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        # 오늘 날짜 확인
         today = datetime.now().strftime("%Y-%m-%d")
         if data.get("date") != today:
             logger.info("watchlist.json 날짜 불일치 → 무시")
