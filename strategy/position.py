@@ -250,7 +250,7 @@ def check_position(pos: dict) -> str:
         return "take_profit"
 
     # ── [2순위] MA120 이탈 ─────────────────────────────────────
-    from strategy.condition import get_ma120
+    from strategy.strategy_reversion import get_ma120
     ma120 = get_ma120(code)
     if ma120 and cur_price < ma120:
         logger.info(
@@ -272,7 +272,7 @@ def check_position(pos: dict) -> str:
             return "trailing_stop"
 
     # ── [4순위] 스토캐스틱 매도 신호 ─────────────────────────────
-    from strategy.condition import check_stochastic_signal
+    from strategy.strategy_reversion import check_stochastic_signal
     if check_stochastic_signal(code) == "SELL":
         logger.info(f"[{pos['name']}] 🟣 스토캐스틱 과열 이탈 매도 [{strategy_type}]")
         return "stoch_sell"

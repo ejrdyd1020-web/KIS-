@@ -22,17 +22,12 @@ load_dotenv(os.path.join(current_path, ".env"))
 
 from auth                  import get_access_token
 from api.balance           import get_balance
+from api.ohlcv             import load_ohlcv_cache, fetch_and_save_ohlcv
 
-try:
-    from position              import run_monitor, sync_positions_from_balance, print_positions
-    from strategy_breakout     import run_breakout
-    from strategy_reversion    import run_reversion
-    from condition             import load_bought_codes
-except ImportError:
-    from strategy.position           import run_monitor, sync_positions_from_balance, print_positions
-    from strategy.strategy_breakout  import run_breakout
-    from strategy.strategy_reversion import run_reversion
-    from condition                   import load_bought_codes
+from strategy.position           import run_monitor, sync_positions_from_balance, print_positions
+from strategy.strategy_breakout  import run_breakout
+from strategy.strategy_reversion import run_reversion
+from strategy.condition          import load_bought_codes
 
 from utils.logger import get_logger
 from config import (
@@ -108,6 +103,12 @@ def main():
         logger.error(f"토큰 발급 실패: {e}")
         sys.exit(1)
 
+    # ── 1-1. 전일 OHLCV 캐시 로드 ────────────────────────────
+    logger.info("📂 전일 OHLCV 캐시 로드 중...")
+    cached_cnt = load_ohlcv_cache()
+    if cached_cnt == 0:
+        logger.info("캐시 없음 → 장전 스캔 시 수집 예정")
+
     # ── 2. 시작 정보 출력 ─────────────────────────────────────
     print_startup_info()
 
@@ -128,6 +129,10 @@ def main():
             watchlist = run_premarket_screening(top_n=10)
             if watchlist:
                 save_watchlist(watchlist)
+                # watchlist 종목 전일 OHLCV 일괄 수집
+                wl_codes = [s["code"] for s in watchlist]
+                logger.info(f"📊 watchlist {len(wl_codes)}개 종목 전일 OHLCV 수집 중...")
+                fetch_and_save_ohlcv(wl_codes)
         except Exception as e:
             logger.error(f"장전 스캔 오류: {e}")
 
@@ -150,11 +155,6 @@ def main():
     )
 
     # ── 6. 장 시작 대기 ───────────────────────────────────────
-    now = datetime.now().strftime("%H:%M")
-    if now < MARKET_OPEN:
-        wait_for_market_open()
-
-    # ── 7. 장 시작 대기 ───────────────────────────────────────
     now = datetime.now().strftime("%H:%M")
     if now < MARKET_OPEN:
         wait_for_market_open()
@@ -202,6 +202,17 @@ def main():
         while True:
             now = datetime.now().strftime("%H:%M")
 
+            # ── 스레드 생존 감시 ──────────────────────────────
+            # 모니터 스레드가 죽으면 손절/익절 불가 → 즉시 중단
+            if not monitor_thread.is_alive():
+                logger.error("🚨 모니터 스레드 비정상 종료 → 자동매매 긴급 중단!")
+                stop_event.set()
+                break
+
+            # 전략 스레드가 모두 죽었으면 경고 (모니터는 살아있으므로 청산은 가능)
+            if not breakout_thread.is_alive() and not reversion_thread.is_alive():
+                logger.warning("⚠️ 전략 스레드 모두 종료 → 신규 매수 없음 (모니터는 유지)")
+
             # 전략 전환 감지 → 로그 출력
             current_strat = get_current_strategy()
             if current_strat != _last_strategy:
@@ -223,6 +234,10 @@ def main():
 
     except KeyboardInterrupt:
         logger.info("사용자가 프로그램을 종료했습니다 (Ctrl+C)")
+        stop_event.set()
+        time.sleep(3)
+    except Exception as e:
+        logger.error(f"🚨 메인 루프 예외 발생: {e} → 자동매매 긴급 중단")
         stop_event.set()
         time.sleep(3)
 

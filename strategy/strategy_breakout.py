@@ -7,11 +7,17 @@
 #
 #  매수 조건:
 #    1. 등락률 +3% ~ +25%
-#    2. 거래량 전일 대비 5배 이상
+#    2. 거래량 전일 대비 5배 이상 (분당 환산)
 #    3. 전일 고가 돌파 (현재가 > 전일 고가)
 #    4. 체결강도 100% 이상
 #    5. 전일 거래대금 300억 이상
-#    ※ 스토캐스틱 / MA 필터 OFF (장초반 캔들 부족)
+#    ※ RSI / 스토캐스틱 / MA 필터 OFF (장초반 캔들 부족, 거래량+체결강도로 판단)
+#
+#  점수 산정 (100점 만점, 80점 이상만 매수):
+#    - 체결강도      30% (200% = 만점)
+#    - 등락률        30% (25% = 만점)
+#    - 거래량 급증   20% (분당 환산, 20배 = 만점)
+#    - 거래대금 급증 20% (분당 환산, 20배 = 만점)
 #
 #  손절 / 익절:
 #    - 고정 손절  : -3.0%
@@ -30,6 +36,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from premarket             import load_watchlist
 from api.price             import get_current_price, get_volume_rank
+from api.ohlcv             import get_prev_ohlcv, get_prev_high, get_prev_trade_amount, get_prev_volume, get_atr
 from api.order             import buy_market, calc_buy_qty
 from api.balance           import get_deposit
 from strategy.position     import (
@@ -71,7 +78,7 @@ def check_breakout_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
 
     체크 항목:
       1. 등락률 범위
-      2. 전일 거래대금 300억 이상
+      2. 전일 거래대금 100억 이상
       3. 거래량 급증 (전일 5배 이상)
       4. 전일 고가 돌파
       5. 체결강도 100% 이상
@@ -87,6 +94,27 @@ def check_breakout_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
     change_rate = basic.get("change_rate", 0)
     volume      = basic.get("volume", 0)
 
+    # ── 0. 종목명 기반 제외 필터 ────────────────────────────────
+    #  API fid_trgt_exls_cls_code로 1차 제외하지만
+    #  ETF, 리츠, SPAC 등이 빠져나오는 경우 대비 2차 필터
+    name = basic.get("name", "")
+    EXCLUDE_KEYWORDS = [
+        "ETF", "ETN",                          # ETF/ETN
+        "KODEX", "TIGER", "KBSTAR", "KOSEF",   # ETF 브랜드
+        "ARIRANG", "HANARO", "SOL", "ACE",
+        "리츠", "REIT",                         # 리츠
+        "스팩", "SPAC",                         # 스팩
+        "우", "우B", "우C",                     # 우선주 (종목명 끝)
+    ]
+    excluded = any(kw in name for kw in EXCLUDE_KEYWORDS)
+    # 우선주: 종목명 끝이 '우', '우B', '우C' 패턴
+    if not excluded and (name.endswith("우") or name.endswith("우B") or name.endswith("우C")):
+        excluded = True
+
+    if excluded:
+        failed.append(f"제외종목({name})")
+        return False, failed
+
     # ── 1. 등락률 범위 ─────────────────────────────────────────
     min_r = BREAKOUT["min_change_rate"]
     max_r = BREAKOUT["max_change_rate"]
@@ -95,30 +123,55 @@ def check_breakout_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
     else:
         failed.append(f"등락률범위외({change_rate:+.1f}%)")
 
-    # ── 2. 전일 거래대금 300억 이상 ───────────────────────────
-    prev_trade_amt = int(basic.get("prev_trade_amount", 0) / 100_000_000)
-    if prev_trade_amt >= CONDITION.get("min_trade_amount", 300):
+    # ── 2. 전일 거래대금 300억 이상 (ohlcv 캐시 우선) ────────
+    prev_ohlcv     = get_prev_ohlcv(code)
+    raw_trade_amt  = (
+        prev_ohlcv["trade_amount"] if prev_ohlcv
+        else basic.get("prev_trade_amount", 0)
+    )
+    prev_trade_amt = int(raw_trade_amt / 100_000_000)
+    if prev_trade_amt >= CONDITION.get("min_trade_amount", 100):
         passed.append(f"전일거래대금({prev_trade_amt:,}억)")
     else:
         failed.append(f"전일거래대금부족({prev_trade_amt:,}억)")
 
-    # ── 3. 거래량 급증 (전일 5배) ─────────────────────────────
-    prev_vol    = detail.get("prev_volume", 0)
-    surge_ratio = volume / prev_vol if prev_vol > 0 else 0
-    min_surge   = BREAKOUT["volume_surge_ratio"]
+    # ── 3. 거래량 급증 (분당 환산 비교) ─────────────────────────
+    #
+    #  전일 총거래량 기준 직접 비교 시 장 초반(09:00~09:10)에
+    #  하루치 거래량을 넘기는 건 불가능 → 분당 평균으로 환산 비교.
+    #
+    #  전일 분당 평균 = 전일 총거래량 ÷ 390분 (6.5시간)
+    #  오늘 분당 평균 = 오늘 누적거래량 ÷ 장 시작 후 경과분
+    #  surge_ratio   = 오늘 분당 평균 ÷ 전일 분당 평균
+    #
+    prev_vol  = (
+        prev_ohlcv["volume"] if prev_ohlcv
+        else detail.get("prev_volume", 0)
+    )
+    min_surge = BREAKOUT["volume_surge_ratio"]
 
-    if surge_ratio >= min_surge:
-        passed.append(f"거래량급증({surge_ratio:.1f}배)")
-    elif surge_ratio == 0:
-        passed.append("거래량급증(확인불가-통과)")
+    if prev_vol > 0:
+        now           = datetime.now()
+        market_open   = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        elapsed_min   = max((now - market_open).seconds / 60, 1)  # 최소 1분
+        prev_per_min  = prev_vol / 390.0          # 전일 분당 평균
+        today_per_min = volume / elapsed_min      # 오늘 분당 평균
+        surge_ratio   = today_per_min / prev_per_min if prev_per_min > 0 else 0
+
+        if surge_ratio >= min_surge:
+            passed.append(f"거래량급증({surge_ratio:.1f}배/분당환산)")
+        else:
+            failed.append(f"거래량부족({surge_ratio:.1f}배/{min_surge}배기준/분당환산)")
     else:
-        failed.append(f"거래량부족({surge_ratio:.1f}배/{min_surge}배기준)")
+        surge_ratio = 0
+        passed.append("거래량급증(확인불가-통과)")
 
-    # ── 4. 전일 고가 돌파 ─────────────────────────────────────
-    week52_high = detail.get("week52_high", 0)
-    prev_high   = basic.get("prev_high", 0)
+    # ── 4. 전일 고가 돌파 (ohlcv 캐시 우선) ──────────────────
+    prev_high = (
+        prev_ohlcv["high"] if prev_ohlcv
+        else basic.get("prev_high", 0)
+    )
 
-    # prev_high 없으면 week52_high로 대체 불가 → 현재가 > 시가 조건으로 fallback
     if prev_high > 0:
         if price > prev_high:
             passed.append(f"전일고가돌파({price:,}>{prev_high:,})")
@@ -187,23 +240,43 @@ def filter_breakout_candidates(stocks: list[dict]) -> list[dict]:
 
 def score_breakout(stock: dict) -> float:
     """
-    BREAKOUT 종목 점수 계산.
-      - 거래량 급증도 50% (모멘텀 핵심)
-      - 등락률        30%
-      - 체결강도      20%
+    BREAKOUT 종목 점수 계산 (100점 만점).
+
+    가중치:
+      - 체결강도      30% (200% = 만점)
+      - 등락률        30% (25% = 만점)
+      - 거래량 순위   20% (1위 = 만점, 300위 = 0점)
+      - 거래대금 순위 20% (1위 = 만점, 300위 = 0점)
+
+    순위 점수 공식: 20 - (20/300 × 순위)
+    매수 집행 커트라인: 80점 이상
     """
-    change_rate   = stock.get("change_rate", 0)
-    volume        = stock.get("volume", 0)
-    prev_vol      = stock.get("prev_volume", 0)
-    exec_strength = stock.get("exec_strength", 100.0)
+    change_rate     = stock.get("change_rate", 0)
+    exec_strength   = stock.get("exec_strength", 100.0)
+    vol_rank        = stock.get("vol_rank", 300)    # 거래량 순위
+    amt_rank        = stock.get("amt_rank", 300)    # 거래대금 순위
 
-    surge_ratio   = volume / prev_vol if prev_vol > 0 else 1.0
+    # ── 거래량 순위 점수 (1위=20점, 300위≈0점) ───────────────
+    # 공식: 20 - (20/300 × (순위-1))  →  1위=20점, 300위=0.07점
+    vol_score  = max(20 - (20 / 300 * (vol_rank - 1)), 0)
 
-    surge_score   = min(surge_ratio / 10.0, 1.0) * 100   # 10배 = 만점
-    rate_score    = min(change_rate / 25.0, 1.0) * 100
+    # ── 거래대금 순위 점수 (1위=20점, 300위≈0점) ─────────────
+    amt_score  = max(20 - (20 / 300 * (amt_rank - 1)), 0)
+
+    # ── 체결강도 점수 (200% = 만점 30점) ─────────────────────
     strength_score = min(exec_strength / 200.0, 1.0) * 100
 
-    return round(surge_score * 0.5 + rate_score * 0.3 + strength_score * 0.2, 2)
+    # ── 등락률 점수 (25% = 만점 30점) ────────────────────────
+    rate_score = min(change_rate / 25.0, 1.0) * 100
+
+    total = round(
+        strength_score * 0.3 +
+        rate_score     * 0.3 +
+        vol_score      +        # 이미 20점 기준
+        amt_score,              # 이미 20점 기준
+        2
+    )
+    return total
 
 
 # ══════════════════════════════════════════
@@ -245,14 +318,16 @@ def execute_breakout_buy(stock: dict, per_budget: int) -> bool:
     result = buy_market(code, qty)
 
     if result["success"]:
-        add_position(code, name, qty, price, strategy_type=STRATEGY_BREAKOUT)
+        # ATR 조회 → 동적 손절가 계산용
+        atr = get_atr(code)
+        add_position(code, name, qty, price, strategy_type=STRATEGY_BREAKOUT, atr=atr)
         try:
-            import condition as _cond
-            _cond._bought_codes.add(code)
-            _cond._save_bought_codes()
+            from strategy.condition import _bought_codes, _save_bought_codes
+            _bought_codes.add(code)
+            _save_bought_codes()
         except Exception:
             pass
-        logger.info(f"[{name}] ✅ BREAKOUT 매수 완료")
+        logger.info(f"[{name}] ✅ BREAKOUT 매수 완료 | ATR: {atr:,.0f}원")
         return True
     else:
         logger.warning(f"[{name}] ❌ BREAKOUT 매수 실패: {result['msg']}")
@@ -310,10 +385,20 @@ def run_breakout(stop_event=None, total_budget: int = 0):
             time.sleep(SCAN_INTERVAL)
             continue
 
-        stocks = get_volume_rank(top_n=30)
+        stocks = get_volume_rank(top_n=300)
         if not stocks:
             time.sleep(SCAN_INTERVAL)
             continue
+
+        # ── 거래량 순위 부여 (API 반환 순서 = 거래량 순위) ───
+        for i, s in enumerate(stocks, 1):
+            s["vol_rank"] = i
+
+        # ── 거래대금 순위 부여 (당일 누적거래대금 내림차순) ──
+        sorted_by_amt = sorted(stocks, key=lambda x: x.get("trade_amount", 0), reverse=True)
+        amt_rank_map  = {s["code"]: i for i, s in enumerate(sorted_by_amt, 1)}
+        for s in stocks:
+            s["amt_rank"] = amt_rank_map.get(s["code"], 300)
 
         if wl_codes:
             stocks.sort(key=lambda x: (0 if x["code"] in wl_codes else 1))
@@ -338,16 +423,28 @@ def run_breakout(stop_event=None, total_budget: int = 0):
             slot_budget * remaining_slots,
         )
 
+        SCORE_THRESHOLD = 70.0   # 매수 집행 최소 점수
+
         for stock, per_budget in zip(top_candidates[:remaining_slots], per_budgets):
             if sum(
                 1 for p in get_positions().values()
                 if p.get("strategy_type") == STRATEGY_BREAKOUT
             ) >= MAX_PER_STRAT:
                 break
+
+            s = score_breakout(stock)
             logger.info(
-                f"[{stock['name']}] 점수: {score_breakout(stock):.1f} | "
+                f"[{stock['name']}] 점수: {s:.1f}점 | "
                 f"배분금액: {per_budget:,}원"
             )
+
+            # ── 80점 커트라인 ───────────────────────────────
+            if s < SCORE_THRESHOLD:
+                logger.info(
+                    f"[{stock['name']}] ⛔ 점수 미달 ({s:.1f} < {SCORE_THRESHOLD}) → 매수 스킵"
+                )
+                continue
+
             execute_breakout_buy(stock, per_budget)
             time.sleep(0.5)
 

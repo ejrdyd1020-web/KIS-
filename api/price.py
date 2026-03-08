@@ -119,7 +119,11 @@ def get_volume_rank(top_n: int = 30) -> list[dict]:
                 "fid_input_price_2"      : "",
                 "fid_vol_cnt"            : "",
                 "fid_trgt_cls_code"      : "111111111",
-                "fid_trgt_exls_cls_code" : "000000",
+                # 제외종목 설정 (6자리):
+                #   1자리: 관리종목  2자리: 투자위험/경고/주의
+                #   3자리: 우선주    4자리: 증거금100%
+                #   5자리: ETF       6자리: 불성실공시
+                "fid_trgt_exls_cls_code" : "111111",
                 "fid_div_cls_code"       : "0",
             },
             timeout=10,

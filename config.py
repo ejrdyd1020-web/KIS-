@@ -42,7 +42,7 @@ ADVANCED_FILTER = {
     "max_market_cap"        : 99_999_999,
 
     # 거래대금 (억원)
-    "min_trade_amount"      : 300,
+    "min_trade_amount"      : 100,    # 전일 거래대금 최소 기준 (억원) — 300→100 완화
 
     # 당일 과열 제외
     "max_day_change_rate"   : 25.0,

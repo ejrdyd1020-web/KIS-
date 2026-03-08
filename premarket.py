@@ -39,6 +39,53 @@ from utils.logger import get_logger
 
 logger = get_logger("premarket")
 
+
+def _save_to_ohlcv_cache(code: str, candles: list[dict]):
+    """
+    get_daily_chart() 조회 결과를 ohlcv_prev.json에 동시 저장.
+    candles[0] = 가장 최근 일봉 (전일 데이터).
+    MA5 / MA20도 함께 계산해서 저장 — 전략에서 바로 활용 가능.
+    지연 import로 순환참조 방지.
+    """
+    try:
+        import json
+        from datetime import date
+        from api.ohlcv import _cache, _ensure_data_dir, _load_cache_file, _CACHE_PATH
+
+        if not candles:
+            return
+
+        prev = candles[0]   # index 0 = 최신 (전일)
+        ohlcv = {
+            "open"        : prev["open"],
+            "high"        : prev["high"],
+            "low"         : prev["low"],
+            "close"       : prev["close"],
+            "volume"      : prev["volume"],
+            "trade_amount": int(prev.get("trade_amount", 0)),
+            "ma5"         : 0,
+            "ma20"        : 0,
+        }
+
+        if len(candles) >= 5:
+            ohlcv["ma5"]  = round(sum(c["close"] for c in candles[:5])  / 5,  2)
+        if len(candles) >= 20:
+            ohlcv["ma20"] = round(sum(c["close"] for c in candles[:20]) / 20, 2)
+
+        # 메모리 캐시 갱신
+        _cache[code] = ohlcv
+
+        # 파일 저장
+        _ensure_data_dir()
+        data = _load_cache_file()
+        data.setdefault("stocks", {})[code] = ohlcv
+        data["date"] = date.today().isoformat()
+        with open(_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+
+    except Exception as e:
+        logger.debug(f"[{code}] ohlcv 캐시 저장 스킵: {e}")
+
 WATCHLIST_PATH = os.path.join(os.path.dirname(__file__), "watchlist.json")
 
 
@@ -248,6 +295,10 @@ def run_premarket_screening(top_n: int = 10) -> list[dict]:
             logger.debug(f"[{name}] 일봉 데이터 부족 → 스킵")
             time.sleep(0.2)
             continue
+
+        # 조회한 일봉 데이터를 ohlcv_prev.json에 즉시 캐시 저장
+        # → strategy_breakout/reversion에서 API 중복 호출 없이 바로 활용
+        _save_to_ohlcv_cache(code, candles)
 
         # ── 2단계 모멘텀 필터 ──────────────────────────────────
 
