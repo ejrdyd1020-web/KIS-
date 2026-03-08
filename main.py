@@ -15,29 +15,56 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 
-# [추가] 현재 파일이 있는 경로를 시스템 경로에 추가하여 모듈 인식 문제 해결
 current_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_path)
 
-# .env 로드 (상위 폴더에 있는 경우를 대비)
 load_dotenv(os.path.join(current_path, ".env"))
 
 from auth                  import get_access_token
 from api.balance           import get_balance
 
-# [수정] 경로 문제를 방지하기 위해 직접 임포트
 try:
-    from position          import run_monitor, sync_positions_from_balance, print_positions
-    from condition         import run_strategy, print_candidates
+    from position              import run_monitor, sync_positions_from_balance, print_positions
+    from strategy_breakout     import run_breakout
+    from strategy_reversion    import run_reversion
+    from condition             import load_bought_codes
 except ImportError:
-    # 만약 폴더 구조가 strategy/ 안에 있다면 아래와 같이 시도
-    from strategy.position import run_monitor, sync_positions_from_balance, print_positions
-    from strategy.condition import run_strategy, print_candidates
+    from strategy.position           import run_monitor, sync_positions_from_balance, print_positions
+    from strategy.strategy_breakout  import run_breakout
+    from strategy.strategy_reversion import run_reversion
+    from condition                   import load_bought_codes
 
-from utils.logger          import get_logger
-from config import MARKET_OPEN, MARKET_CLOSE, BUDGET
+from utils.logger import get_logger
+from config import (
+    MARKET_OPEN, MARKET_CLOSE, TOTAL_BUDGET,
+    BREAKOUT, REVERSION, MARKET_PHASE,
+    STRATEGY_BREAKOUT, STRATEGY_REVERSION, STRATEGY_HALT,
+)
+
+try:
+    from api.index import get_market_phase, calc_strategy_budget, calc_position_budgets, BULL, BEAR
+except ImportError:
+    from index import get_market_phase, calc_strategy_budget, calc_position_budgets, BULL, BEAR
 
 logger = get_logger("main")
+
+
+def get_current_strategy() -> str:
+    """
+    현재 시각 기준으로 활성 전략 반환.
+
+    Returns:
+        STRATEGY_BREAKOUT  : 09:00 ~ 09:10  공격형 주도주 포착
+        STRATEGY_REVERSION : 09:10 ~ 15:20  방어형 눌림목 매매
+        STRATEGY_HALT      : 그 외           매매 중단
+    """
+    now = datetime.now().strftime("%H:%M")
+    if BREAKOUT["start_time"] <= now < BREAKOUT["end_time"]:
+        return STRATEGY_BREAKOUT
+    elif REVERSION["start_time"] <= now < REVERSION["end_time"]:
+        return STRATEGY_REVERSION
+    else:
+        return STRATEGY_HALT
 
 
 def wait_for_market_open():
@@ -54,8 +81,6 @@ def print_startup_info():
     """시작 시 계좌 정보 출력"""
     data    = get_balance()
     deposit = data.get("deposit", 0) if data else 0
-    reserve = int(deposit * BUDGET["reserve_ratio"])
-    pool    = deposit - reserve
 
     print(f"""
 ╔══════════════════════════════════════════════════════╗
@@ -63,10 +88,13 @@ def print_startup_info():
 ╚══════════════════════════════════════════════════════╝
   시작 시간  : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
   장 운영    : {MARKET_OPEN} ~ {MARKET_CLOSE}
+  전략 A     : BREAKOUT  {BREAKOUT['start_time']} ~ {BREAKOUT['end_time']}  (익절 +{BREAKOUT['take_profit_pct']}% / 손절 {BREAKOUT['stop_loss_pct']}%)
+  전략 B     : REVERSION {REVERSION['start_time']} ~ {REVERSION['end_time']}  (익절 +{REVERSION['take_profit_pct']}% / 손절 {REVERSION['stop_loss_pct']}%)
+  총 예산    : {TOTAL_BUDGET:,}원
 """)
 
     if data:
-        print(f"  💰 매수가능금액 : {deposit:,}원  (예비비 {reserve:,}원 제외 → 운용 {pool:,}원)")
+        print(f"  💰 매수가능금액 : {deposit:,}원")
         print(f"  📦 보유 종목    : {len(data.get('stocks', []))}개")
         print()
 
@@ -88,6 +116,9 @@ def main():
     sync_positions_from_balance()
     print_positions()
 
+    # ── 3-1. 당일 매수 종목 복원 (재시작 재매수 방지) ─────────
+    load_bought_codes()
+
     # ── 4. 장전 스캔 (08:30~09:00 구간이면 즉시 실행) ─────────
     now = datetime.now().strftime("%H:%M")
     if "08:30" <= now < MARKET_OPEN:
@@ -100,23 +131,57 @@ def main():
         except Exception as e:
             logger.error(f"장전 스캔 오류: {e}")
 
-    # ── 5. 장 시작 대기 ───────────────────────────────────────
+    # ── 5. 시장 국면 판단 + 전략별 자금 배분 계산 ────────────
+    logger.info("📊 시장 국면 판단 중...")
+    try:
+        phase  = get_market_phase()
+        budget = calc_strategy_budget(phase)
+    except Exception as e:
+        logger.error(f"시장 국면 판단 오류: {e} → BEAR 기본값 적용")
+        phase  = BEAR
+        budget = calc_strategy_budget(BEAR)
+
+    breakout_budget  = budget["breakout_total"]
+    reversion_budget = budget["reversion_total"]
+
+    logger.info(
+        f"📊 시장 국면: {phase} | "
+        f"BREAKOUT {breakout_budget:,}원 / REVERSION {reversion_budget:,}원"
+    )
+
+    # ── 6. 장 시작 대기 ───────────────────────────────────────
     now = datetime.now().strftime("%H:%M")
     if now < MARKET_OPEN:
         wait_for_market_open()
 
-    # ── 6. 스레드 시작 ────────────────────────────────────────
+    # ── 7. 장 시작 대기 ───────────────────────────────────────
+    now = datetime.now().strftime("%H:%M")
+    if now < MARKET_OPEN:
+        wait_for_market_open()
+
+    # ── 8. 스레드 시작 ────────────────────────────────────────
     stop_event = threading.Event()
 
-    # 조건 검색 + 매수 스레드
-    strategy_thread = threading.Thread(
-        target=run_strategy,
-        args=(stop_event,),
-        name="strategy",
+    current_strat = get_current_strategy()
+    logger.info(f"🎯 현재 활성 전략: {current_strat}")
+
+    # 전략 A — BREAKOUT (09:00~09:10)
+    breakout_thread = threading.Thread(
+        target=run_breakout,
+        args=(stop_event, breakout_budget),
+        name="breakout",
         daemon=True,
     )
 
-    # 손절/익절 모니터링 스레드
+    # 전략 B — REVERSION (09:10~15:20)
+    reversion_thread = threading.Thread(
+        target=run_reversion,
+        args=(stop_event, reversion_budget),
+        name="reversion",
+        daemon=True,
+    )
+
+    # 손절/익절 모니터링
     monitor_thread = threading.Thread(
         target=run_monitor,
         args=(stop_event,),
@@ -124,23 +189,30 @@ def main():
         daemon=True,
     )
 
-    strategy_thread.start()
+    breakout_thread.start()
+    reversion_thread.start()
     monitor_thread.start()
 
-    logger.info("✅ 자동매매 시작! (종료: Ctrl+C)")
+    logger.info("✅ 자동매매 시작! BREAKOUT + REVERSION + 모니터 스레드 가동 (종료: Ctrl+C)")
 
     # ── 7. 메인 루프 ──────────────────────────────────────────
+    _last_strategy = ""   # 전략 전환 감지용
+
     try:
         while True:
             now = datetime.now().strftime("%H:%M")
 
+            # 전략 전환 감지 → 로그 출력
+            current_strat = get_current_strategy()
+            if current_strat != _last_strategy:
+                logger.info(f"🔀 전략 전환: {_last_strategy or '시작'} → {current_strat}")
+                _last_strategy = current_strat
+
             # 장 마감 → stop_event 세팅 후 monitor 스레드가 강제청산 처리
-            # ※ 중복 매도 방지: main.py에서 직접 sell_market 호출하지 않음
-            #   position.py run_monitor()의 "market_close" 신호가 청산 담당
             if now >= MARKET_CLOSE:
                 logger.info(f"⏰ 장 마감 ({MARKET_CLOSE}) → 모니터 스레드 청산 대기 중...")
                 stop_event.set()
-                time.sleep(10)   # monitor 스레드 청산 완료 대기
+                time.sleep(10)
                 break
 
             # 5분마다 포지션 현황 출력
