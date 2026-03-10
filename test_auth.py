@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-import os, requests, json
+import os, requests
 load_dotenv()
 
 APP_KEY    = os.getenv("KIS_APP_KEY")
@@ -10,12 +10,11 @@ print(f"시크릿 앞 10자: {APP_SECRET[:10]}")
 
 res = requests.post(
     "https://openapivts.koreainvestment.com:29443/oauth2/tokenP",
-    headers={"content-type": "application/json"},
-    data=json.dumps({
+    json={
         "grant_type"   : "client_credentials",
         "appkey"       : APP_KEY,
         "appsecret"    : APP_SECRET,
-    })
+    }
 )
 
 print(f"\nHTTP 상태코드: {res.status_code}")

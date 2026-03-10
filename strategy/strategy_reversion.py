@@ -376,7 +376,11 @@ def run_reversion(stop_event=None, total_budget: int = 0):
             break
 
         if not is_reversion_time():
-            time.sleep(60)
+            # 5초씩 나눠서 대기 → stop_event 즉시 반응 가능
+            for _ in range(12):
+                if stop_event and stop_event.is_set():
+                    break
+                time.sleep(5)
             continue
 
         now_str = datetime.now().strftime("%H:%M:%S")

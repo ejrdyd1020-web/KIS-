@@ -437,11 +437,14 @@ def run_breakout(stop_event=None, total_budget: int = 0):
             time.sleep(SCAN_INTERVAL)
             continue
 
-        candidates.sort(key=lambda x: score_breakout(x), reverse=True)
+        # score_breakout 내부에서 get_current_price API를 호출하므로
+        # 정렬·자금배분·커트라인 체크 모두 여기서 1회씩만 호출
+        scored_candidates = [(score_breakout(c), c) for c in candidates]
+        scored_candidates.sort(key=lambda x: x[0], reverse=True)
 
-        # 상위 MAX_PER_STRAT개만 대상
-        top_candidates = candidates[:MAX_PER_STRAT]
-        scores         = [score_breakout(s) for s in top_candidates]
+        top_scored     = scored_candidates[:MAX_PER_STRAT]
+        top_candidates = [c for _, c in top_scored]
+        scores         = [s for s, _ in top_scored]
 
         # 점수 비율 자금 배분
         remaining_slots = MAX_PER_STRAT - breakout_count
@@ -453,20 +456,19 @@ def run_breakout(stop_event=None, total_budget: int = 0):
 
         SCORE_THRESHOLD = 70.0   # 매수 집행 최소 점수
 
-        for stock, per_budget in zip(top_candidates[:remaining_slots], per_budgets):
+        for (s, stock), per_budget in zip(top_scored[:remaining_slots], per_budgets):
             if sum(
                 1 for p in get_positions().values()
                 if p.get("strategy_type") == STRATEGY_BREAKOUT
             ) >= MAX_PER_STRAT:
                 break
 
-            s = score_breakout(stock)
             logger.info(
                 f"[{stock['name']}] 점수: {s:.1f}점 | "
                 f"배분금액: {per_budget:,}원"
             )
 
-            # ── 80점 커트라인 ───────────────────────────────
+            # ── 70점 커트라인 ───────────────────────────────
             if s < SCORE_THRESHOLD:
                 logger.info(
                     f"[{stock['name']}] ⛔ 점수 미달 ({s:.1f} < {SCORE_THRESHOLD}) → 매수 스킵"

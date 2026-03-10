@@ -65,20 +65,30 @@ def _prev_business_day() -> str:
 
 def fetch_prev_ohlcv_single(code: str) -> dict | None:
     """
-    KIS inquire-price API로 종목 전일 OHLCV 1건 조회.
-    output에 전일 고/저/종가, 거래량, 거래대금이 포함되어 있어
-    코스피·코스닥 모든 종목에서 안정적으로 작동.
+    KIS inquire-daily-itemchartprice API로 종목 전일 OHLCV 1건 조회.
+    일봉 API를 사용해 실제 전일 시/고/저/종가, 거래량, 거래대금을 반환.
+
+    주의: inquire-price API의 stck_mxpr(상한가), stck_llam(하한가),
+          acml_vol(당일거래량)은 전일 OHLCV가 아니므로 사용하지 않음.
 
     Returns:
         {"open", "high", "low", "close", "volume", "trade_amount"} or None
     """
     try:
+        today      = date.today()
+        start_date = (today - timedelta(days=14)).strftime("%Y%m%d")
+        end_date   = (today - timedelta(days=1)).strftime("%Y%m%d")
+
         res = requests.get(
-            f"{get_base_url()}/uapi/domestic-stock/v1/quotations/inquire-price",
-            headers=get_headers("FHKST01010100"),
+            f"{get_base_url()}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+            headers=get_headers("FHKST01010400"),
             params={
                 "fid_cond_mrkt_div_code": "J",
                 "fid_input_iscd"        : code,
+                "fid_input_date_1"      : start_date,
+                "fid_input_date_2"      : end_date,
+                "fid_period_div_code"   : "D",
+                "fid_org_adj_prc"       : "0",
             },
             timeout=5,
         )
@@ -89,17 +99,19 @@ def fetch_prev_ohlcv_single(code: str) -> dict | None:
             logger.warning(f"[{code}] OHLCV 조회 실패: {data.get('msg1')}")
             return None
 
-        o = data.get("output", {})
-        if not o:
+        items = data.get("output2", [])
+        if not items:
             return None
 
+        # output2의 첫 번째 항목 = 가장 최근 거래일 (전일)
+        o = items[0]
         return {
-            "open"        : int(o.get("stck_sdpr", 0)),   # 전일 종가로 대체 (전일 시가 필드 없음)
-            "high"        : int(o.get("stck_mxpr", 0)),   # 전일 고가
-            "low"         : int(o.get("stck_llam",  0)),  # 전일 저가
-            "close"       : int(o.get("stck_sdpr", 0)),   # 전일 종가
-            "volume"      : int(o.get("acml_vol",  0)),   # 전일 거래량
-            "trade_amount": int(o.get("acml_tr_pbmn", 0)),# 전일 거래대금(원)
+            "open"        : int(o.get("stck_oprc", 0)),    # 전일 시가
+            "high"        : int(o.get("stck_hgpr", 0)),    # 전일 고가
+            "low"         : int(o.get("stck_lwpr", 0)),    # 전일 저가
+            "close"       : int(o.get("stck_clpr", 0)),    # 전일 종가
+            "volume"      : int(o.get("acml_vol",  0)),    # 전일 거래량
+            "trade_amount": int(o.get("acml_tr_pbmn", 0)), # 전일 거래대금(원)
         }
 
     except Exception as e:

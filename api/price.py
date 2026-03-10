@@ -65,7 +65,7 @@ def get_current_price(stock_code: str) -> dict:
             "high"          : int(o.get("stck_hgpr", 0)),
             "low"           : int(o.get("stck_lwpr", 0)),
             "volume"        : int(o.get("acml_vol", 0)),
-            "prev_volume"   : int(o.get("avrg_vol", 0)),
+            "prev_volume"   : int(o.get("prdy_vol", 0)),   # prdy_vol = 전일거래량 (avrg_vol은 평균거래량)
             "change_rate"   : float(o.get("prdy_ctrt", 0)),
             "change_amt"    : int(o.get("prdy_vrss", 0)),
             "week52_high"   : int(o.get("d52_hgpr", 0)),

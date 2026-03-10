@@ -149,4 +149,6 @@ MARKET_PHASE = {
     "bull_breakout_ratio" : 0.8,   # BULL 시 BREAKOUT 자금 비율
     "bear_breakout_ratio" : 0.2,   # BEAR 시 BREAKOUT 자금 비율
     "max_per_strategy"    : 3,     # 전략별 최대 보유 종목 수
+    "ma_short"            : 5,     # 단기 이평 기간 (api/index.py에서 참조)
+    "ma_long"             : 20,    # 장기 이평 기간 (api/index.py에서 참조)
 }

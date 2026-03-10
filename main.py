@@ -159,7 +159,7 @@ def main():
     if now < MARKET_OPEN:
         wait_for_market_open()
 
-    # ── 8. 스레드 시작 ────────────────────────────────────────
+    # ── 7. 스레드 시작 ────────────────────────────────────────
     stop_event = threading.Event()
 
     current_strat = get_current_strategy()
@@ -195,7 +195,7 @@ def main():
 
     logger.info("✅ 자동매매 시작! BREAKOUT + REVERSION + 모니터 스레드 가동 (종료: Ctrl+C)")
 
-    # ── 7. 메인 루프 ──────────────────────────────────────────
+    # ── 8. 메인 루프 ──────────────────────────────────────────
     _last_strategy = ""   # 전략 전환 감지용
 
     try:

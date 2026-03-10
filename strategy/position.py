@@ -11,6 +11,7 @@
 
 import time
 import logging
+import threading
 from datetime import datetime
 
 # ※ check_stochastic_signal, get_ma120 은 순환 참조 방지를 위해
@@ -25,6 +26,8 @@ from config     import (
 logger = logging.getLogger(__name__)
 
 _positions: dict[str, dict] = {}
+_positions_lock = threading.Lock()   # breakout / reversion / monitor 동시 접근 보호
+_loss_lock      = threading.Lock()   # _daily_realized_loss 동시 갱신 보호
 
 # ── 일일 손실 추적 ────────────────────────────────────────────
 _daily_realized_loss: int = 0   # 당일 누적 실현손실 (원, 음수)
@@ -54,7 +57,7 @@ def add_position(code: str, name: str, qty: int, avg_price: int,
     hard_stop   = int(avg_price * (1 + stop_loss_pct / 100))
     take_profit = int(avg_price * (1 + take_profit_pct / 100))
 
-    _positions[code] = {
+    entry = {
         "code"          : code,
         "name"          : name,
         "qty"           : qty,
@@ -67,6 +70,8 @@ def add_position(code: str, name: str, qty: int, avg_price: int,
         "strategy_type" : strategy_type,
         "bought_at"     : datetime.now(),
     }
+    with _positions_lock:
+        _positions[code] = entry
     logger.info(
         f"[{name}({code})] 포지션 등록 | 전략: {strategy_type} | "
         f"매입가: {avg_price:,}원 | "
@@ -76,14 +81,16 @@ def add_position(code: str, name: str, qty: int, avg_price: int,
 
 
 def remove_position(code: str):
-    if code in _positions:
-        name = _positions[code]["name"]
-        del _positions[code]
-        logger.info(f"[{name}({code})] 포지션 제거")
+    with _positions_lock:
+        if code in _positions:
+            name = _positions[code]["name"]
+            del _positions[code]
+            logger.info(f"[{name}({code})] 포지션 제거")
 
 
 def get_positions() -> dict:
-    return _positions.copy()
+    with _positions_lock:
+        return _positions.copy()
 
 
 def sync_positions_from_balance():
@@ -129,26 +136,28 @@ def record_realized_pnl(code: str, name: str, avg_price: int, sell_price: int, q
     """
     global _daily_realized_loss, _daily_loss_halt
 
-    pnl = (sell_price - avg_price) * qty   # 실현손익 (원)
-    _daily_realized_loss += pnl
-
+    pnl     = (sell_price - avg_price) * qty   # 실현손익 (원)
     pnl_pct = (sell_price - avg_price) / avg_price * 100
+
+    with _loss_lock:
+        _daily_realized_loss += pnl
+        current_loss = _daily_realized_loss
 
     logger.info(
         f"[{name}({code})] 실현손익 기록 | "
         f"손익: {pnl:+,}원 ({pnl_pct:+.2f}%) | "
-        f"당일 누적 실현손익: {_daily_realized_loss:+,}원"
+        f"당일 누적 실현손익: {current_loss:+,}원"
     )
 
     # 한도 체크 (손실만, 이익은 무시)
     if not DAILY_LOSS_LIMIT["enabled"]:
         return False
 
-    if _daily_realized_loss <= -abs(DAILY_LOSS_LIMIT["max_loss_amt"]):
+    if current_loss <= -abs(DAILY_LOSS_LIMIT["max_loss_amt"]):
         _daily_loss_halt = True
         logger.critical(
             f"🚨 일일 최대 손실 한도 초과! "
-            f"누적손실: {_daily_realized_loss:+,}원 / "
+            f"누적손실: {current_loss:+,}원 / "
             f"한도: -{DAILY_LOSS_LIMIT['max_loss_amt']:,}원 "
             f"→ 자동매매 중단"
         )
@@ -156,10 +165,10 @@ def record_realized_pnl(code: str, name: str, avg_price: int, sell_price: int, q
 
     # 한도의 80% 도달 시 경고
     warn_amt = -abs(DAILY_LOSS_LIMIT["max_loss_amt"]) * 0.8
-    if _daily_realized_loss <= warn_amt:
+    if current_loss <= warn_amt:
         logger.warning(
             f"⚠️ 일일 손실 한도 80% 도달! "
-            f"누적손실: {_daily_realized_loss:+,}원 / "
+            f"누적손실: {current_loss:+,}원 / "
             f"한도: -{DAILY_LOSS_LIMIT['max_loss_amt']:,}원"
         )
 
@@ -214,8 +223,9 @@ def check_position(pos: dict) -> str:
     now        = datetime.now().strftime("%H:%M")
 
     # 고점 갱신 (트레일링 스탑 기준)
-    if cur_price > _positions.get(code, {}).get("max_price", 0):
-        _positions[code]["max_price"] = cur_price
+    with _positions_lock:
+        if code in _positions and cur_price > _positions[code].get("max_price", 0):
+            _positions[code]["max_price"] = cur_price
 
     profit_pct = (cur_price - avg_price) / avg_price * 100
 
@@ -309,7 +319,15 @@ def execute_sell(pos: dict, reason: str, stop_event=None) -> bool:
         logger.info(f"[{pos['name']}] ✅ {label} 완료 | 주문번호: {result['order_no']}")
 
         # ── 실현손익 기록 + 일일 한도 체크 ──────────────────
-        sell_price = result.get("price", pos["avg_price"])   # 체결가 (없으면 매입가로 대체)
+        # KIS 시장가 주문 응답에는 체결가가 없으므로 현재가를 조회해 사용.
+        # 현재가 조회 실패 시에만 avg_price 로 fallback (PnL 오차 감수).
+        _price_info = get_current_price(pos["code"])
+        sell_price  = _price_info.get("price", 0) if _price_info else 0
+        if sell_price <= 0:
+            sell_price = pos["avg_price"]
+            logger.warning(
+                f"[{pos['name']}] 체결가 조회 실패 → 매입가({sell_price:,}원)로 PnL 계산 (오차 있음)"
+            )
         halted = record_realized_pnl(
             code       = pos["code"],
             name       = pos["name"],

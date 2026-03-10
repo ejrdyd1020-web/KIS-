@@ -64,12 +64,15 @@ def load_bought_codes():
     프로그램 시작 시 bought_codes.json 불러오기.
     오늘 날짜가 아니면 자동 초기화 (다음날 재매수 허용).
     main.py에서 장 시작 전 1회 호출.
+
+    주의: _bought_codes 를 = set() 으로 재할당하면
+    다른 모듈의 'from condition import _bought_codes'가 구 객체를 참조하게 됨.
+    반드시 .clear() / .update() 로 동일 객체를 유지해야 함.
     """
-    global _bought_codes
     try:
         if not os.path.exists(_BOUGHT_CODES_PATH):
             logger.debug("bought_codes.json 없음 → 빈 세트로 시작")
-            _bought_codes = set()
+            _bought_codes.clear()
             return
 
         with open(_BOUGHT_CODES_PATH, "r", encoding="utf-8") as f:
@@ -77,16 +80,17 @@ def load_bought_codes():
 
         if data.get("date") != date.today().isoformat():
             logger.info("bought_codes.json 날짜 불일치 → 초기화 (새 거래일)")
-            _bought_codes = set()
+            _bought_codes.clear()
             _save_bought_codes()
             return
 
-        _bought_codes = set(data.get("codes", []))
+        _bought_codes.clear()
+        _bought_codes.update(data.get("codes", []))
         logger.info(f"당일 매수 종목 복원: {_bought_codes if _bought_codes else '없음'}")
 
     except Exception as e:
         logger.error(f"bought_codes.json 불러오기 오류: {e}")
-        _bought_codes = set()
+        _bought_codes.clear()
 
 
 # ══════════════════════════════════════════

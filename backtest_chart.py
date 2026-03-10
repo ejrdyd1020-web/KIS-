@@ -72,7 +72,7 @@ def get_minute_candles(stock_code, date):
 def calc_ma40(candles, idx):
     if idx < 40:
         return None
-    closes = [candles[i]["close"] for i in range(idx - 20, idx)]
+    closes = [candles[i]["close"] for i in range(idx - 40, idx)]  # 40개 가져와야 함
     return sum(closes) / 40
 
 
@@ -130,6 +130,14 @@ def run_backtest(code, name, candles):
         "take_profit": take_profit,
     }
 
+
+# backtest_chart.py는 직접 실행 전용 스크립트입니다.
+# 다른 모듈에서 import 하면 API 호출과 파일 생성이 즉시 실행됩니다.
+if __name__ != "__main__":
+    raise ImportError(
+        "backtest_chart.py는 직접 실행 전용입니다. "
+        "python backtest_chart.py 로 실행하세요."
+    )
 
 # ── 데이터 수집 ───────────────────────────────────────────────
 results = []
@@ -381,7 +389,7 @@ function buildChart(r, idx) {{
         }},
         {{
           label: 'MA40',
-          data: r.ma20,
+          data: r.ma40,
           borderColor: '#f59e0b',
           borderWidth: 1.5,
           pointRadius: 0,
