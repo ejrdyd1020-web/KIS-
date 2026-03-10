@@ -243,10 +243,7 @@ def filter_reversion_candidates(stocks: list[dict]) -> list[dict]:
     positions  = get_positions()
     candidates = []
 
-    try:
-        from condition import _bought_codes
-    except ImportError:
-        _bought_codes = set()
+    from strategy.condition import _bought_codes
 
     for s in stocks:
         code  = s["code"]
@@ -332,12 +329,9 @@ def execute_reversion_buy(stock: dict, per_budget: int) -> bool:
 
     if result["success"]:
         add_position(code, name, qty, price, strategy_type=STRATEGY_REVERSION)
-        try:
-            import condition as _cond
-            _cond._bought_codes.add(code)
-            _cond._save_bought_codes()
-        except Exception:
-            pass
+        from strategy.condition import _bought_codes, _save_bought_codes
+        _bought_codes.add(code)
+        _save_bought_codes()
         logger.info(f"[{name}] ✅ REVERSION 매수 완료")
         return True
     else:

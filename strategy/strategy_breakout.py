@@ -229,10 +229,7 @@ def filter_breakout_candidates(stocks: list[dict]) -> list[dict]:
     candidates = []
 
     # import는 함수 내 지연 import로 순환참조 방지
-    try:
-        from condition import _bought_codes
-    except ImportError:
-        _bought_codes = set()
+    from strategy.condition import _bought_codes
 
     for s in stocks:
         code  = s["code"]
@@ -349,12 +346,9 @@ def execute_breakout_buy(stock: dict, per_budget: int) -> bool:
         # ATR 조회 → 동적 손절가 계산용
         atr = get_atr(code)
         add_position(code, name, qty, price, strategy_type=STRATEGY_BREAKOUT)
-        try:
-            from strategy.condition import _bought_codes, _save_bought_codes
-            _bought_codes.add(code)
-            _save_bought_codes()
-        except Exception:
-            pass
+        from strategy.condition import _bought_codes, _save_bought_codes
+        _bought_codes.add(code)
+        _save_bought_codes()
         logger.info(f"[{name}] ✅ BREAKOUT 매수 완료 | ATR: {atr:,.0f}원")
         return True
     else:
