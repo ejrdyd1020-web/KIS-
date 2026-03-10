@@ -37,10 +37,25 @@ def get_current_price(stock_code: str) -> dict:
 
         o = data["output"]
 
-        # 체결강도: 매수체결건수 / 매도체결건수 × 100
+        # 체결강도: inquire-price의 shnu/seln은 장 마감 후 미제공
+        # → inquire-ccnl의 tday_rltv(당일상대강도) 사용
         buy_qty  = int(o.get("shnu_cntg_csnu", 0))
         sell_qty = int(o.get("seln_cntg_csnu", 0))
-        exec_strength = round(buy_qty / sell_qty * 100, 2) if sell_qty > 0 else 100.0
+        if sell_qty > 0:
+            exec_strength = round(buy_qty / sell_qty * 100, 2)
+        else:
+            # fallback: inquire-ccnl로 tday_rltv 조회
+            try:
+                r2 = requests.get(
+                    f"{get_base_url()}/uapi/domestic-stock/v1/quotations/inquire-ccnl",
+                    headers=get_headers("FHKST01010300"),
+                    params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": stock_code},
+                    timeout=3,
+                )
+                items2 = r2.json().get("output", [])
+                exec_strength = float(items2[0].get("tday_rltv", 100.0)) if items2 else 100.0
+            except Exception:
+                exec_strength = 100.0
 
         return {
             "code"          : stock_code,
@@ -119,11 +134,7 @@ def get_volume_rank(top_n: int = 30) -> list[dict]:
                 "fid_input_price_2"      : "",
                 "fid_vol_cnt"            : "",
                 "fid_trgt_cls_code"      : "111111111",
-                # 제외종목 설정 (6자리):
-                #   1자리: 관리종목  2자리: 투자위험/경고/주의
-                #   3자리: 우선주    4자리: 증거금100%
-                #   5자리: ETF       6자리: 불성실공시
-                "fid_trgt_exls_cls_code" : "111111",
+                "fid_trgt_exls_cls_code" : "000000",
                 "fid_div_cls_code"       : "0",
             },
             timeout=10,
@@ -153,6 +164,9 @@ def get_volume_rank(top_n: int = 30) -> list[dict]:
                 "trade_amount"      : int(item.get("acml_tr_pbmn", 0)),  # 당일 누적거래대금 (원)
                 "prev_trade_amount" : int(item.get("avrg_tr_pbmn", 0)),  # 전일 거래대금 (원)
                 "prev_volume"       : int(item.get("prdy_vol", 0)),       # 전일 거래량
+                "exec_strength"     : 100.0,                              # 체결강도 (volume-rank API 미제공, 기본값)
+                "volume_rank"       : int(item.get("data_rank", 300)),   # 거래량 순위
+                "trade_rank"        : int(item.get("data_rank", 300)),   # 거래대금 순위 (근사)
             })
 
         logger.info(f"거래량 순위 조회 완료: {len(results)}개 종목 (등락률 필터 후)")

@@ -35,7 +35,7 @@ def get_minute_chart(stock_code: str, count: int = 30) -> list[dict]:
         "fid_etc_cls_code"      : "",
         "fid_cond_mrkt_div_code": "J",
         "fid_input_iscd"        : stock_code,
-        "fid_input_hour_1"      : "1",    # 1분봉
+        "fid_input_hour_1"      : "0",    # 현재시각 기준 최근 분봉
         "fid_pw_data_incu_yn"   : "N",
     }
 

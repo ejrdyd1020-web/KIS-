@@ -42,7 +42,7 @@ ADVANCED_FILTER = {
     "max_market_cap"        : 99_999_999,
 
     # 거래대금 (억원)
-    "min_trade_amount"      : 100,    # 전일 거래대금 최소 기준 (억원) — 300→100 완화
+    "min_trade_amount"      : 300,
 
     # 당일 과열 제외
     "max_day_change_rate"   : 25.0,
@@ -96,7 +96,9 @@ BREAKOUT = {
     "end_time"          : "09:10",
     "min_change_rate"   : 3.0,    # 등락률 하한 (장전 갭 기준 완화)
     "max_change_rate"   : 25.0,   # 등락률 상한
-    "volume_surge_ratio": 5.0,    # 전일 대비 거래량 5배 이상 (강한 모멘텀)
+    "volume_surge_ratio": 3.0,    # 전일 대비 거래량 3배 이상 (강한 모멘텀)
+    "exec_strength_max"  : 120.0, # 체결강도 만점 기준 (이상이면 30점 만점)
+    "change_rate_max"    : 15.0,  # 등락률 만점 기준 (이상이면 30점 만점)
     "ma_filter"         : False,  # MA 필터 OFF (장초반 캔들 부족)
     "stoch_filter"      : False,  # 스토캐스틱 OFF (장초반 신호 불안정)
     "scan_interval_sec" : 5,      # 실시간 스캔 (5초 간격)
@@ -143,8 +145,7 @@ STRATEGY_HALT      = "HALT"      # 장외 시간 / 손실 한도 초과
 #   BULL (코스피+코스닥 MA5>MA20): BREAKOUT 80% / REVERSION 20%
 #   BEAR (하나라도 보합/하락)     : BREAKOUT 20% / REVERSION 80%
 MARKET_PHASE = {
-    "ma_short"            : 5,     # 단기 이동평균 기간
-    "ma_long"             : 20,    # 장기 이동평균 기간
+    "bull_threshold"      : 0.5,   # 지수 평균 등락률 +0.5% 이상 = BULL
     "bull_breakout_ratio" : 0.8,   # BULL 시 BREAKOUT 자금 비율
     "bear_breakout_ratio" : 0.2,   # BEAR 시 BREAKOUT 자금 비율
     "max_per_strategy"    : 3,     # 전략별 최대 보유 종목 수

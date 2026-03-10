@@ -47,7 +47,7 @@ MOCK_STOCKS = [
     {
         "name": "퍼스텍", "code": "004410",
         "price": 9020, "change_rate": 16.8,
-        "prev_high": 8900, "prev_trade_amt_억": 450,
+        "prev_high": 8900, "prev_trade_amt_억": 450, "today_trade_amt": 1_730_769_230,  # 450억/390*5*3배
         "vol_rank": 5, "amt_rank": 18,
         "exec_strength": 168.0, "atr": 180.0,
         "memo": "✅ 순위 상위 + 체결강도/등락률 강 → 1위 예상",
@@ -56,7 +56,7 @@ MOCK_STOCKS = [
     {
         "name": "서울식품", "code": "011040",
         "price": 217, "change_rate": 11.9,
-        "prev_high": 210, "prev_trade_amt_억": 380,
+        "prev_high": 210, "prev_trade_amt_억": 380, "today_trade_amt": 2_435_897_435,  # 380억/390*5*5배
         "vol_rank": 2, "amt_rank": 95,
         "exec_strength": 145.0, "atr": 8.0,
         "memo": "🟡 거래량 2위 but 거래대금 95위 → 점수 확인",
@@ -65,7 +65,7 @@ MOCK_STOCKS = [
     {
         "name": "현대ADM", "code": "010820",
         "price": 15540, "change_rate": 13.0,
-        "prev_high": 14800, "prev_trade_amt_억": 520,
+        "prev_high": 14800, "prev_trade_amt_억": 520, "today_trade_amt": 1_000_000_000,  # 520억/390*5*1.5배 → 미달
         "vol_rank": 28, "amt_rank": 22,
         "exec_strength": 112.0, "atr": 320.0,
         "memo": "🟡 체결강도 낮아 점수 미달 예상",
@@ -74,7 +74,7 @@ MOCK_STOCKS = [
     {
         "name": "소형주A", "code": "123450",
         "price": 3200, "change_rate": 18.5,
-        "prev_high": 3100, "prev_trade_amt_억": 85,
+        "prev_high": 3100, "prev_trade_amt_억": 85, "today_trade_amt": 326_923_076,    # 85억/390*5*3배
         "vol_rank": 8, "amt_rank": 30,
         "exec_strength": 155.0, "atr": 65.0,
         "memo": "❌ 전일 거래대금 85억 < 100억 → 필터 탈락",
@@ -83,7 +83,7 @@ MOCK_STOCKS = [
     {
         "name": "SK증권", "code": "001510",
         "price": 1931, "change_rate": 10.8,
-        "prev_high": 2100, "prev_trade_amt_억": 610,
+        "prev_high": 2100, "prev_trade_amt_억": 610, "today_trade_amt": 2_346_153_846,  # 610억/390*5*3배
         "vol_rank": 3, "amt_rank": 27,
         "exec_strength": 132.0, "atr": 42.0,
         "memo": "❌ 현재가 1,931 < 전일고가 2,100 → 필터 탈락",
@@ -92,7 +92,7 @@ MOCK_STOCKS = [
     {
         "name": "성광벤드", "code": "014970",
         "price": 24500, "change_rate": 9.3,
-        "prev_high": 24100, "prev_trade_amt_억": 890,
+        "prev_high": 24100, "prev_trade_amt_억": 890, "today_trade_amt": 3_423_076_923,  # 890억/390*5*3배
         "vol_rank": 12, "amt_rank": 11,
         "exec_strength": 141.0, "atr": 510.0,
         "memo": "✅ 균형잡힌 순위 + 체결강도 → 2위 예상",
@@ -101,7 +101,7 @@ MOCK_STOCKS = [
     {
         "name": "대한전선", "code": "001440",
         "price": 5840, "change_rate": 7.2,
-        "prev_high": 5700, "prev_trade_amt_억": 720,
+        "prev_high": 5700, "prev_trade_amt_억": 720, "today_trade_amt": 923_076_923,    # 720억/390*5*1배 → 미달
         "vol_rank": 20, "amt_rank": 35,
         "exec_strength": 88.0, "atr": 120.0,
         "memo": "❌ 체결강도 88% < 100% → 필터 탈락",
@@ -110,7 +110,7 @@ MOCK_STOCKS = [
     {
         "name": "한화솔루션", "code": "009830",
         "price": 28100, "change_rate": 5.8,
-        "prev_high": 27500, "prev_trade_amt_억": 1200,
+        "prev_high": 27500, "prev_trade_amt_억": 1200, "today_trade_amt": 4_615_384_615,  # 1200억/390*5*3배
         "vol_rank": 180, "amt_rank": 9,
         "exec_strength": 118.0, "atr": 580.0,
         "memo": "🟡 거래량 180위 → 점수 미달 예상",
@@ -119,7 +119,7 @@ MOCK_STOCKS = [
     {
         "name": "KODEX레버리지", "code": "122630",
         "price": 18220, "change_rate": 8.9,
-        "prev_high": 17900, "prev_trade_amt_억": 980,
+        "prev_high": 17900, "prev_trade_amt_억": 980, "today_trade_amt": 7_538_461_538,  # 980억/390*5*6배
         "vol_rank": 4, "amt_rank": 1,
         "exec_strength": 152.0, "atr": 380.0,
         "memo": "✅ 거래대금 1위 + 거래량 4위 → 3위 예상",
@@ -128,7 +128,7 @@ MOCK_STOCKS = [
     {
         "name": "신규급등주", "code": "999990",
         "price": 12400, "change_rate": 21.5,
-        "prev_high": 12000, "prev_trade_amt_억": 320,
+        "prev_high": 12000, "prev_trade_amt_억": 320, "today_trade_amt": 4_923_076_923,  # 320억/390*5*12배
         "vol_rank": 9, "amt_rank": 6,
         "exec_strength": 178.0, "atr": 250.0,
         "memo": "✅ 등락률+체결강도 최강 → 1위 경쟁",
@@ -205,12 +205,20 @@ def check_filters(s: dict, elapsed_min: float) -> tuple[bool, list[str], list[st
     else:
         failed.append(f"등락률범위외({cr:+.1f}%)")
 
-    # 2. 전일 거래대금 100억+
-    ta = s["prev_trade_amt_억"]
-    if ta >= CONDITION.get("min_trade_amount", 100):
-        passed.append(f"전일거래대금({ta:,}억)")
+    # 2. 거래대금 급증 (분당 환산 비교)
+    prev_trade_raw  = s["prev_trade_amt_억"] * 100_000_000
+    today_trade_raw = s.get("today_trade_amt", 0)
+    if prev_trade_raw > 0 and today_trade_raw > 0:
+        prev_amt_per_min  = prev_trade_raw / 390.0
+        today_amt_per_min = today_trade_raw / ELAPSED_MIN
+        amt_surge         = today_amt_per_min / prev_amt_per_min
+        min_amt_surge     = BREAKOUT.get("trade_amount_surge_ratio", 2.0)
+        if amt_surge >= min_amt_surge:
+            passed.append(f"거래대금급증({amt_surge:.1f}배/분당환산)")
+        else:
+            failed.append(f"거래대금부족({amt_surge:.1f}배/{min_amt_surge}배기준)")
     else:
-        failed.append(f"전일거래대금부족({ta:,}억)")
+        passed.append("거래대금(확인불가-통과)")
 
     # 3. 거래량 순위 300위 이내
     vol_rank = s.get("vol_rank", 999)

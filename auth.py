@@ -21,12 +21,45 @@ BASE_URL = (
     "https://openapivts.koreainvestment.com:29443"
 )
 
-# 토큰 캐시 (메모리)
+import pathlib
+
+# 토큰 캐시 (메모리 + 파일)
 _token_cache = {
     "access_token"  : None,
     "expires_at"    : None,   # datetime
     "ws_token"      : None,
 }
+
+_TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "token_cache.json")
+
+def _load_token_file():
+    """파일에서 토큰 캐시 로드"""
+    try:
+        if not os.path.exists(_TOKEN_FILE):
+            return
+        with open(_TOKEN_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        expires_at = datetime.strptime(data["expires_at"], "%Y-%m-%d %H:%M:%S")
+        if datetime.now() < expires_at - timedelta(minutes=5):
+            _token_cache["access_token"] = data["access_token"]
+            _token_cache["expires_at"]   = expires_at
+    except Exception:
+        pass
+
+def _save_token_file():
+    """토큰 캐시를 파일에 저장"""
+    try:
+        pathlib.Path(os.path.dirname(_TOKEN_FILE)).mkdir(parents=True, exist_ok=True)
+        with open(_TOKEN_FILE, "w", encoding="utf-8") as f:
+            json.dump({
+                "access_token": _token_cache["access_token"],
+                "expires_at"  : _token_cache["expires_at"].strftime("%Y-%m-%d %H:%M:%S"),
+            }, f)
+    except Exception:
+        pass
+
+# 프로세스 시작 시 파일 캐시 로드
+_load_token_file()
 
 
 def get_access_token(force_refresh: bool = False) -> str:
@@ -67,6 +100,7 @@ def get_access_token(force_refresh: bool = False) -> str:
 
     _token_cache["access_token"] = token
     _token_cache["expires_at"]   = expires_at
+    _save_token_file()  # 파일에도 저장
 
     print(f"[AUTH] ✅ 토큰 발급 성공 (만료: {expires_at.strftime('%H:%M:%S')})")
     return token

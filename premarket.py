@@ -128,12 +128,13 @@ def get_daily_chart(stock_code: str, count: int = 30) -> list[dict]:
         candles = []
         for item in data.get("output2", [])[:count]:
             candles.append({
-                "date"  : item.get("stck_bsop_date", ""),
-                "open"  : int(item.get("stck_oprc", 0)),
-                "high"  : int(item.get("stck_hgpr", 0)),
-                "low"   : int(item.get("stck_lwpr", 0)),
-                "close" : int(item.get("stck_clpr", 0)),
-                "volume": int(item.get("acml_vol", 0)),
+                "date"        : item.get("stck_bsop_date", ""),
+                "open"        : int(item.get("stck_oprc", 0)),
+                "high"        : int(item.get("stck_hgpr", 0)),
+                "low"         : int(item.get("stck_lwpr", 0)),
+                "close"       : int(item.get("stck_clpr", 0)),
+                "volume"      : int(item.get("acml_vol", 0)),
+                "trade_amount": int(item.get("acml_tr_pbmn", 0)),  # 거래대금(원) 추가
             })
         return candles
 

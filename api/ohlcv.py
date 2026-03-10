@@ -65,29 +65,21 @@ def _prev_business_day() -> str:
 
 def fetch_prev_ohlcv_single(code: str) -> dict | None:
     """
-    KIS API로 종목 전일 OHLCV 1건 조회.
+    KIS inquire-price API로 종목 전일 OHLCV 1건 조회.
+    output에 전일 고/저/종가, 거래량, 거래대금이 포함되어 있어
+    코스피·코스닥 모든 종목에서 안정적으로 작동.
 
     Returns:
         {"open", "high", "low", "close", "volume", "trade_amount"} or None
     """
-    tr_id  = "FHKST03010100"
-    today  = datetime.now().strftime("%Y%m%d")
-    prev   = _prev_business_day()
-
-    params = {
-        "fid_cond_mrkt_div_code": "J",
-        "fid_input_iscd"        : code,
-        "fid_input_date_1"      : prev,
-        "fid_input_date_2"      : today,
-        "fid_period_div_code"   : "D",
-        "fid_org_adj_prc"       : "0",
-    }
-
     try:
         res = requests.get(
-            f"{get_base_url()}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
-            headers=get_headers(tr_id),
-            params=params,
+            f"{get_base_url()}/uapi/domestic-stock/v1/quotations/inquire-price",
+            headers=get_headers("FHKST01010100"),
+            params={
+                "fid_cond_mrkt_div_code": "J",
+                "fid_input_iscd"        : code,
+            },
             timeout=5,
         )
         res.raise_for_status()
@@ -97,19 +89,17 @@ def fetch_prev_ohlcv_single(code: str) -> dict | None:
             logger.warning(f"[{code}] OHLCV 조회 실패: {data.get('msg1')}")
             return None
 
-        output = data.get("output2", [])
-        if not output:
+        o = data.get("output", {})
+        if not o:
             return None
 
-        # output2[0] = 가장 최근 일봉 (전일)
-        row = output[0]
         return {
-            "open"        : int(row.get("stck_oprc", 0)),
-            "high"        : int(row.get("stck_hgpr", 0)),
-            "low"         : int(row.get("stck_lwpr", 0)),
-            "close"       : int(row.get("stck_clpr", 0)),
-            "volume"      : int(row.get("acml_vol",  0)),
-            "trade_amount": int(row.get("acml_tr_pbmn", 0)),
+            "open"        : int(o.get("stck_sdpr", 0)),   # 전일 종가로 대체 (전일 시가 필드 없음)
+            "high"        : int(o.get("stck_mxpr", 0)),   # 전일 고가
+            "low"         : int(o.get("stck_llam",  0)),  # 전일 저가
+            "close"       : int(o.get("stck_sdpr", 0)),   # 전일 종가
+            "volume"      : int(o.get("acml_vol",  0)),   # 전일 거래량
+            "trade_amount": int(o.get("acml_tr_pbmn", 0)),# 전일 거래대금(원)
         }
 
     except Exception as e:
@@ -263,8 +253,8 @@ def get_prev_ohlcv(code: str) -> dict | None:
             _ensure_data_dir()
             with open(_CACHE_PATH, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[{code}] ohlcv 캐시 파일 저장 실패: {e}")
     return ohlcv
 
 
@@ -284,3 +274,20 @@ def get_prev_volume(code: str) -> int:
     """전일 거래량 반환. 없으면 0."""
     ohlcv = get_prev_ohlcv(code)
     return ohlcv["volume"] if ohlcv else 0
+
+
+def get_atr(code: str, period: int = 14) -> float:
+    """
+    전일 OHLCV 기반 단순 ATR 추정값 반환.
+    일봉 캐시가 1개뿐이라 다중 캔들 ATR 계산 불가 →
+    전일 (고가 - 저가) 를 ATR 근사값으로 사용.
+    캐시 없으면 현재가의 2% 를 기본값으로 반환.
+    """
+    ohlcv = get_prev_ohlcv(code)
+    if ohlcv:
+        high = ohlcv.get("high", 0)
+        low  = ohlcv.get("low",  0)
+        if high > 0 and low > 0 and high > low:
+            return float(high - low)
+    # 캐시 없을 때: 현재가 조회 불가 → 0 반환 (호출부에서 fallback 처리)
+    return 0.0

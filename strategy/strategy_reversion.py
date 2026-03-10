@@ -32,7 +32,6 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from premarket             import load_watchlist
 from api.price             import get_current_price, get_volume_rank
-from api.ohlcv             import get_prev_ohlcv, get_prev_volume
 from api.chart             import get_volume_ratio_1min, get_minute_chart, get_minute_chart_bulk
 from api.order             import buy_market, calc_buy_qty
 from api.balance           import get_deposit
@@ -94,39 +93,6 @@ def check_market_phase(code: str, price: float) -> bool:
     is_bull = price >= ma120
     logger.debug(f"[{code}] 현재가={price:,} / MA120={ma120:,.1f} → {'상승장' if is_bull else '하락장'}")
     return is_bull
-
-
-# ══════════════════════════════════════════
-# RSI (데이트레이딩용 period=9)
-# ══════════════════════════════════════════
-
-def calc_rsi_1min(code: str, period: int = 9) -> float:
-    """
-    1분봉 기준 RSI 계산.
-    데이트레이딩 최적화: period=9 (기본값)
-      - RSI 14는 너무 느려 장 초반 모멘텀 포착 불가
-      - RSI 9는 현재 수급 변화를 빠르게 반영
-
-    Returns:
-        RSI 값 (0~100), 데이터 부족 시 50.0 (중립)
-    """
-    try:
-        candles = get_minute_chart(code, count=period + 10)
-        if len(candles) < period + 1:
-            return 50.0
-        df      = pd.DataFrame(candles).iloc[::-1].reset_index(drop=True)
-        delta   = df["close"].diff()
-        gain    = delta.clip(lower=0)
-        loss    = (-delta).clip(lower=0)
-        avg_gain = gain.rolling(window=period).mean()
-        avg_loss = loss.rolling(window=period).mean()
-        rs       = avg_gain / avg_loss.replace(0, float("nan"))
-        rsi      = 100 - (100 / (1 + rs))
-        val      = rsi.iloc[-1]
-        return round(float(val), 2) if not pd.isna(val) else 50.0
-    except Exception as e:
-        logger.error(f"[{code}] RSI 계산 오류: {e}")
-        return 50.0
 
 
 # ══════════════════════════════════════════
@@ -203,25 +169,20 @@ def check_reversion_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
     else:
         failed.append(f"등락률범위외({change_rate:+.1f}%)")
 
-    # ── 2. 전일 거래대금 (ohlcv 캐시 우선) ───────────────────
-    prev_ohlcv     = get_prev_ohlcv(code)
-    raw_trade_amt  = (
-        prev_ohlcv["trade_amount"] if prev_ohlcv
-        else basic.get("prev_trade_amount", 0)
-    )
-    prev_trade_amt = int(raw_trade_amt / 100_000_000)
+    # ── 2. 전일 거래대금 ──────────────────────────────────────
+    prev_trade_amt = int(basic.get("prev_trade_amount", 0) / 100_000_000)
     if prev_trade_amt >= ADVANCED_FILTER["min_trade_amount"]:
         passed.append(f"전일거래대금({prev_trade_amt:,}억)")
     else:
         failed.append(f"전일거래대금부족({prev_trade_amt:,}억)")
 
-    # ── 3. 거래량 급증 (OR 조건, ohlcv 캐시 우선) ────────────
+    # ── 3. 거래량 급증 (OR 조건) ──────────────────────────────
     vol_ratio_1min = get_volume_ratio_1min(code)
-    prev_vol       = (
-        prev_ohlcv["volume"] if prev_ohlcv
-        else detail.get("prev_volume", 0)
-    )
-    surge_ratio    = volume / prev_vol if prev_vol > 0 else 0
+    # 전일 거래량: ohlcv 캐시 우선, 없으면 price API 값
+    from api.ohlcv import get_prev_ohlcv
+    _prev_ohlcv = get_prev_ohlcv(code)
+    prev_vol    = (_prev_ohlcv.get("volume", 0) if _prev_ohlcv else 0) or detail.get("prev_volume", 0)
+    surge_ratio = volume / prev_vol if prev_vol > 0 else 0
     min_surge      = REVERSION["volume_surge_ratio"]
 
     vol_1min_ok  = vol_ratio_1min >= ADVANCED_FILTER["min_volume_ratio_1min"]
@@ -372,9 +333,9 @@ def execute_reversion_buy(stock: dict, per_budget: int) -> bool:
     if result["success"]:
         add_position(code, name, qty, price, strategy_type=STRATEGY_REVERSION)
         try:
-            from strategy.condition import _bought_codes, _save_bought_codes
-            _bought_codes.add(code)
-            _save_bought_codes()
+            import condition as _cond
+            _cond._bought_codes.add(code)
+            _cond._save_bought_codes()
         except Exception:
             pass
         logger.info(f"[{name}] ✅ REVERSION 매수 완료")

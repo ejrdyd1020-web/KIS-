@@ -120,19 +120,72 @@ def run_forever():
             wait_until(target_dt)
             continue
 
-        # ── 자동매매 실행 ────────────────────────────────────
-        logger.info(f"\n{'='*60}")
-        logger.info(f"  🚀 {today} 자동매매 시작!")
-        logger.info(f"{'='*60}\n")
+        # ── 장 전 스크리닝 (08:30~09:00) ────────────────────
+        premarket_time = datetime(today.year, today.month, today.day, 8, 30, 0)
+        now_check = datetime.now()
+        if now_check < premarket_time:
+            logger.info(f"⏳ 장 전 스크리닝 08:30까지 대기...")
+            wait_until(premarket_time)
 
+        logger.info("📋 장 전 스크리닝 시작 (ohlcv 캐시 수집 + watchlist 생성)")
         try:
-            from main import main
-            main()
-        except SystemExit:
-            logger.info("main() 정상 종료 (sys.exit)")
+            from auth import get_access_token
+            get_access_token()
+            from premarket import run_premarket_screening, save_watchlist
+            watchlist = run_premarket_screening(top_n=10)
+            if watchlist:
+                save_watchlist(watchlist)
+                logger.info(f"✅ 장 전 스크리닝 완료: {len(watchlist)}개 종목")
+            else:
+                logger.warning("⚠ 장 전 스크리닝 후보 없음 (ohlcv 캐시는 수집됨)")
         except Exception as e:
-            logger.error(f"🚨 main() 예외 발생: {e}")
-            logger.error("  → 오늘 매매 중단, 내일 다시 시작합니다")
+            logger.error(f"🚨 장 전 스크리닝 오류: {e} → 스킵 후 매매 진행")
+
+        # ── 09:00까지 남은 시간 대기 ────────────────────────
+        market_open2 = datetime(today.year, today.month, today.day, 9, 0, 0)
+        if datetime.now() < market_open2:
+            wait_until(market_open2)
+
+        # ── 자동매매 실행 (오류 시 2분 대기 후 장 중이면 재시작) ──
+        RESTART_WAIT = 120   # 2분
+        RESTART_LIMIT = 5    # 하루 최대 재시작 횟수
+
+        restart_count = 0
+        while True:
+            logger.info(f"\n{'='*60}")
+            if restart_count == 0:
+                logger.info(f"  🚀 {today} 자동매매 시작!")
+            else:
+                logger.info(f"  🔄 {today} 자동매매 재시작 (#{restart_count})")
+            logger.info(f"{'='*60}\n")
+
+            try:
+                from main import main
+                main()
+                # 정상 종료 → 루프 탈출
+                break
+            except SystemExit:
+                logger.info("main() 정상 종료 (sys.exit)")
+                break
+            except Exception as e:
+                logger.error(f"🚨 main() 예외 발생: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+
+                # 장 마감 이후면 재시작 불필요
+                market_close = datetime(today.year, today.month, today.day, 15, 35, 0)
+                if datetime.now() >= market_close:
+                    logger.info("  → 장 마감 이후, 재시작 하지 않음")
+                    break
+
+                # 재시작 횟수 초과
+                restart_count += 1
+                if restart_count > RESTART_LIMIT:
+                    logger.error(f"  → 재시작 {RESTART_LIMIT}회 초과, 오늘 매매 중단")
+                    break
+
+                logger.info(f"  → 시스템 멈춤 감지. {RESTART_WAIT//60}분 후 자동 재시작... (#{restart_count}/{RESTART_LIMIT})")
+                time.sleep(RESTART_WAIT)
 
         # ── 오늘 매매 종료 → 내일 영업일 09:00까지 대기 ─────
         next_day  = next_trading_day(today)
