@@ -8,6 +8,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from auth import get_headers, get_base_url, get_account, IS_REAL
+from config import TRADE_COST
 from utils.logger import get_logger
 
 logger = get_logger("order")
@@ -158,18 +159,19 @@ def cancel_order(org_order_no: str, stock_code: str, qty: int) -> dict:
 def calc_buy_qty(price: int, budget: int) -> int:
     """
     예산과 현재가로 매수 가능 수량 계산.
+    매수 수수료(0.015%)를 포함하여 예산 초과 방지.
 
     Args:
         price : 현재가 (원)
         budget: 투자 예산 (원)
 
     Returns:
-        매수 가능 수량 (수수료 0.015% 고려)
+        매수 가능 수량
     """
     if price <= 0:
         return 0
-    fee_rate = 1.00015   # 수수료 고려
-    return int(budget / (price * fee_rate))
+    cost_per_share = price * (1 + TRADE_COST["buy_fee"])
+    return int(budget / cost_per_share)
 
 
 def _parse_order_result(data: dict, order_type: str,

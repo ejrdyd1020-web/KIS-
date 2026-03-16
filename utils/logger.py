@@ -4,6 +4,7 @@
 
 import logging
 import os
+import sys
 from logging.handlers import TimedRotatingFileHandler
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "logs")
@@ -26,8 +27,8 @@ def get_logger(name: str) -> logging.Logger:
         datefmt="%H:%M:%S",
     )
 
-    # 콘솔 핸들러
-    ch = logging.StreamHandler()
+    # 콘솔 핸들러 (utf-8 강제 설정으로 이모지 출력 가능)
+    ch = logging.StreamHandler(stream=open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1, closefd=False))
     ch.setLevel(logging.DEBUG)
     ch.setFormatter(fmt)
 

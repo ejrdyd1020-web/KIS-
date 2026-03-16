@@ -81,6 +81,7 @@ def get_minute_chart_bulk(stock_code: str, need: int = 120) -> list[dict]:
         최신 데이터가 index 0인 캔들 리스트 (최소 need개 목표)
     """
     all_candles: list[dict] = []
+    seen_times: set[str] = set()
     last_time = ""   # 빈 문자열 = 현재 시각부터
 
     tr_id = "FHKST03010200"
@@ -114,17 +115,23 @@ def get_minute_chart_bulk(stock_code: str, need: int = 120) -> list[dict]:
         if not items:
             break
 
+        new_added = False
         for item in items:
+            t = item.get("stck_cntg_hour", "")
+            if not t or t in seen_times:
+                continue
+            seen_times.add(t)
             all_candles.append({
-                "time"  : item.get("stck_cntg_hour", ""),
+                "time"  : t,
                 "open"  : int(item.get("stck_oprc", 0)),
                 "high"  : int(item.get("stck_hgpr", 0)),
                 "low"   : int(item.get("stck_lwpr", 0)),
                 "close" : int(item.get("stck_prpr", 0)),
                 "volume": int(item.get("cntg_vol", 0)),
             })
+            new_added = True
 
-        if len(all_candles) >= need:
+        if not new_added or len(all_candles) >= need:
             break
 
         # 마지막 캔들 시간으로 다음 호출 기준 설정
@@ -136,6 +143,32 @@ def get_minute_chart_bulk(stock_code: str, need: int = 120) -> list[dict]:
         _time.sleep(0.2)   # API 호출 간격
 
     return all_candles
+
+
+def get_5min_chart(stock_code: str, need: int = 40) -> list[dict]:
+    """
+    1분봉 데이터를 5개씩 묶어 5분봉으로 변환.
+    need개의 5분봉을 만들려면 need×5개의 1분봉이 필요.
+
+    반환값: [{"open", "high", "low", "close", "volume"}, ...]
+            최신 데이터가 index 0
+    """
+    raw = get_minute_chart_bulk(stock_code, need=need * 5 + 10)
+    if len(raw) < 5:
+        return []
+
+    # 최신 → 과거 순서로 5개씩 그룹핑
+    candles_5m = []
+    for i in range(0, len(raw) - 4, 5):
+        group = raw[i:i + 5]          # [최신, ..., 가장 오래된] 5개
+        candles_5m.append({
+            "open"  : group[-1]["open"],                        # 가장 오래된 봉의 시가
+            "high"  : max(c["high"]   for c in group),
+            "low"   : min(c["low"]    for c in group),
+            "close" : group[0]["close"],                        # 가장 최신 봉의 종가
+            "volume": sum(c["volume"] for c in group),
+        })
+    return candles_5m
 
 
 def get_ma40_1min(stock_code: str) -> float:

@@ -114,7 +114,7 @@ def get_asking_price(stock_code: str) -> dict:
         return {}
 
 
-def get_volume_rank(top_n: int = 30) -> list[dict]:
+def get_volume_rank(top_n: int = 30, min_change_rate: float = None, max_change_rate: float = None) -> list[dict]:
     """
     거래량 순위 조회 (모의투자 지원).
     등락률 조건은 get_fluctuation_rank 대신 이 함수로 대체.
@@ -146,12 +146,15 @@ def get_volume_rank(top_n: int = 30) -> list[dict]:
             logger.warning(f"거래량 순위 조회 실패: {data.get('msg1')}")
             return []
 
+        min_r = min_change_rate if min_change_rate is not None else CONDITION["min_change_rate"]
+        max_r = max_change_rate if max_change_rate is not None else CONDITION["max_change_rate"]
+
         results = []
         for item in data.get("output", [])[:top_n]:
             change_rate = float(item.get("prdy_ctrt", 0))
 
             # 등락률 기본 필터 적용
-            if not (CONDITION["min_change_rate"] <= change_rate <= CONDITION["max_change_rate"]):
+            if not (min_r <= change_rate <= max_r):
                 continue
 
             results.append({

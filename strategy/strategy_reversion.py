@@ -5,17 +5,19 @@
 #
 #  핵심 타점: 스토캐스틱 침체권 골든크로스 + 이평 정배열
 #
-#  매수 조건:
-#    1. 등락률 +3% ~ +15% (과열 구간 회피)
-#    2. 전일 거래대금 300억 이상
-#    3. 거래량 급증 (전일 2배 OR 1분봉 500%)
-#    4. 시가총액 100억 이상
-#    5. 체결강도 100% 이상
-#    6. 스토캐스틱 슬로우 침체권 골든크로스 (K<20 → K>D)
-#    7. 1분봉 MA120 상승장 (현재가 >= MA120)
+#  매수 조건 (멀티 타임프레임):
+#    [1차 관문] 1분봉 스토캐스틱 침체권 골든크로스 (K<20 → K>D, 3봉 이내)
+#    [2차 관문] 5분봉 추세 동시 확인
+#              - 현재가 >= 5분봉 MA20 (상승 추세)
+#              - 5분봉 스토캐스틱 K < 50 (상위 TF 과열 아님)
+#    [3차 필터]
+#    1. 전일 거래대금 300억 이상
+#    2. 거래량 급증 (전일 2배 이상)
+#    3. 시가총액 100억 이상
+#  종목 우선순위: 거래대금 70% + 거래량배율 30%
 #
 #  손절 / 익절:
-#    - 고정 손절  : -2.5% (지지선 이탈 기준 — A보다 타이트)
+#    - 고정 손절  : -1.5% (R:R = 1:2)
 #    - 고정 익절  : +3.0% (짧은 순환매)
 #    - 트레일링   : 수익 2% 이상 시 작동, 고점 대비 -1.5%
 #
@@ -32,7 +34,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from premarket             import load_watchlist
 from api.price             import get_current_price, get_volume_rank
-from api.chart             import get_volume_ratio_1min, get_minute_chart, get_minute_chart_bulk
+from api.chart             import get_volume_ratio_1min, get_minute_chart, get_minute_chart_bulk, get_5min_chart
 from api.order             import buy_market, calc_buy_qty
 from api.balance           import get_deposit
 from strategy.position     import (
@@ -88,33 +90,83 @@ def check_market_phase(code: str, price: float) -> bool:
         return True
     ma120 = get_ma120(code)
     if ma120 is None:
-        logger.warning(f"[{code}] MA120 확인 불가 → 상승장으로 간주")
-        return True
+        logger.warning(f"[{code}] MA120 확인 불가 → 하락장으로 간주(Fail-safe)")
+        return False
     is_bull = price >= ma120
     logger.debug(f"[{code}] 현재가={price:,} / MA120={ma120:,.1f} → {'상승장' if is_bull else '하락장'}")
     return is_bull
 
 
 # ══════════════════════════════════════════
+# 5분봉 추세 + 스토캐스틱 확인
+# ══════════════════════════════════════════
+
+def check_5min_trend(code: str, price: float) -> tuple[bool, str]:
+    """
+    5분봉 기준 추세 확인 (MA120 상승장 필터 대체).
+
+      조건 1: 현재가 >= 5분봉 MA20  (단기 상승 추세)
+      조건 2: 5분봉 스토캐스틱 K < 50  (상위 TF 과열 아님 → 진입 여력)
+
+    Returns:
+        (통과여부, 설명 문자열)
+    """
+    try:
+        candles = get_5min_chart(code, need=30)   # MA20(20봉) + 스토캐스틱(12+5+5)용
+        if len(candles) < 22:
+            logger.warning(f"[{code}] 5분봉 데이터 부족({len(candles)}개) → 차단")
+            return False, "5분봉(데이터부족-차단)"
+
+        df = pd.DataFrame(candles).iloc[::-1].reset_index(drop=True)  # 과거→최신 정렬
+
+        # ── MA20 ───────────────────────────────────────────────
+        ma20 = df["close"].rolling(window=20).mean().iloc[-1]
+        if pd.isna(ma20):
+            return False, "5분봉MA20(산출불가-차단)"
+        above_ma20 = price >= ma20
+
+        # ── 스토캐스틱 K ───────────────────────────────────────
+        slow_k, _ = _calc_stochastic_slow(df)
+        cur_k = slow_k.iloc[-1]
+        if pd.isna(cur_k):
+            return False, "5분봉스토캐스틱(산출불가-차단)"
+        k_not_overbought = cur_k < 50
+
+        if above_ma20 and k_not_overbought:
+            return True, f"5분봉(MA20상승+K={cur_k:.0f})"
+        elif not above_ma20:
+            return False, f"5분봉MA20하락({price:,}<{ma20:,.0f})"
+        else:
+            return False, f"5분봉K과열({cur_k:.0f}≥50)"
+
+    except Exception as e:
+        logger.error(f"[{code}] 5분봉 추세 확인 오류: {e}")
+        return False, "5분봉(오류-차단)"
+
+
+# ══════════════════════════════════════════
 # 스토캐스틱 슬로우
 # ══════════════════════════════════════════
 
+from strategy.indicators import calc_stochastic_slow as _calc_stochastic_slow_fn
+
 def _calc_stochastic_slow(df, k_period=12, d_period=5, smooth_period=5):
-    low_min  = df["low"].rolling(window=k_period).min()
-    high_max = df["high"].rolling(window=k_period).max()
-    denom    = (high_max - low_min).replace(0, float("nan"))
-    fast_k   = ((df["close"] - low_min) / denom) * 100
-    slow_k   = fast_k.rolling(window=smooth_period).mean()
-    slow_d   = slow_k.rolling(window=d_period).mean()
-    return slow_k, slow_d
+    return _calc_stochastic_slow_fn(df, k_period=k_period,
+                                    smooth_period=smooth_period,
+                                    d_period=d_period)
 
 
-def check_stochastic_signal(code: str) -> str:
+def check_stochastic_signal(code: str, cross_window: int = 3) -> str:
     """
     스토캐스틱 슬로우 매수/매도/관망 신호.
-      BUY  : 침체권(20↓) 골든크로스
+      BUY  : 최근 cross_window 봉 이내 침체권(20↓) 골든크로스 발생
       SELL : 과열권(80↑) 데드크로스
       HOLD : 그 외
+
+    cross_window: 골든크로스 감지 허용 봉 수 (기본 3봉)
+      - 1봉: 직전 봉에서만 크로스 감지 (기존 방식, 포착률 낮음)
+      - 3봉: 최근 3봉 이내 크로스 감지 (30초 스캔 주기에서 놓친 크로스 보완)
+      ※ K값이 이미 40 이상이면 이미 반등 많이 된 것으로 간주 → HOLD
     """
     try:
         candles = get_minute_chart(code, count=100)
@@ -122,13 +174,32 @@ def check_stochastic_signal(code: str) -> str:
             return "HOLD"
         df = pd.DataFrame(candles).iloc[::-1].reset_index(drop=True)
         slow_k, slow_d = _calc_stochastic_slow(df)
-        lk, ld, pk, pd_ = slow_k.iloc[-1], slow_d.iloc[-1], slow_k.iloc[-2], slow_d.iloc[-2]
-        if any(pd.isna(v) for v in [lk, ld, pk, pd_]):
+
+        # 최근 봉이 NaN이면 HOLD
+        if any(pd.isna(slow_k.iloc[i]) or pd.isna(slow_d.iloc[i]) for i in [-1, -2]):
             return "HOLD"
-        if lk > ld and pk <= pd_ and min(pk, pd_) <= 20:
-            return "BUY"
+
+        # 현재 K가 이미 40 이상이면 반등 많이 진행 → 진입 기회 아님
+        if slow_k.iloc[-1] >= 40:
+            return "HOLD"
+
+        # 최근 cross_window 봉 이내 골든크로스 감지
+        # i번째 봉: K > D  /  i-1번째 봉: K <= D  /  크로스 시점 min(K,D) <= 20
+        for i in range(-1, -(cross_window + 1), -1):
+            cur_k  = slow_k.iloc[i]
+            cur_d  = slow_d.iloc[i]
+            prev_k = slow_k.iloc[i - 1]
+            prev_d = slow_d.iloc[i - 1]
+            if any(pd.isna(v) for v in [cur_k, cur_d, prev_k, prev_d]):
+                continue
+            if cur_k > cur_d and prev_k <= prev_d and min(prev_k, prev_d) <= 20:
+                return "BUY"
+
+        # 데드크로스 (과열권)
+        lk, ld, pk, pd_ = slow_k.iloc[-1], slow_d.iloc[-1], slow_k.iloc[-2], slow_d.iloc[-2]
         if lk < ld and pk >= pd_ and max(pk, pd_) >= 80:
             return "SELL"
+
     except Exception as e:
         logger.error(f"Stochastic 오류({code}): {e}")
     return "HOLD"
@@ -140,66 +211,64 @@ def check_stochastic_signal(code: str) -> str:
 
 def check_reversion_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
     """
-    REVERSION 전략 고급 필터.
+    REVERSION 전략 고급 필터 (멀티 타임프레임).
 
-      1. 등락률 +3% ~ +15%
-      2. 전일 거래대금 300억 이상
-      3. 거래량 급증 (전일 2배 OR 1분봉 500%)
-      4. 시가총액 100억 이상
-      5. 체결강도 100% 이상
-      6. 스토캐스틱 침체권 골든크로스
-      7. MA120 상승장
+      [1차 관문] 1분봉 스토캐스틱 침체권 골든크로스 (K<20, 3봉 이내)
+      [2차 관문] 5분봉 추세 확인
+        - 현재가 >= 5분봉 MA20 (상승 추세)
+        - 5분봉 스토캐스틱 K < 50 (상위 TF 과열 아님)
+      [3차 필터]
+        1. 전일 거래대금 300억 이상
+        2. 거래량 급증 (전일 2배 이상)
+        3. 시가총액 100억 이상
     """
     passed = []
     failed = []
 
+    price  = basic.get("price", 0)
+    volume = basic.get("volume", 0)
+
+    # ══ 1차 관문: 1분봉 스토캐스틱 골든크로스 ════════════════
+    stoch = check_stochastic_signal(code)
+    if stoch != "BUY":
+        logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: 1분봉스토캐스틱(관망/{stoch})")
+        return False, []
+    passed.append("1분봉스토캐스틱(침체탈출)")
+
+    # ══ 2차 관문: 5분봉 추세 확인 ════════════════════════════
+    trend_ok, trend_msg = check_5min_trend(code, price)
+    if not trend_ok:
+        logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: {trend_msg}")
+        return False, []
+    passed.append(trend_msg)
+
+    # ══ 3차 필터 ══════════════════════════════════════════════
     detail = get_current_price(code)
     if not detail:
         return False, []
 
-    price       = basic.get("price", 0)
-    volume      = basic.get("volume", 0)
-    change_rate = basic.get("change_rate", 0)
-
-    # ── 1. 등락률 범위 (REVERSION은 +15% 상한) ───────────────
-    min_r = REVERSION["min_change_rate"]
-    max_r = REVERSION["max_change_rate"]
-    if min_r <= change_rate <= max_r:
-        passed.append(f"등락률({change_rate:+.1f}%)")
-    else:
-        failed.append(f"등락률범위외({change_rate:+.1f}%)")
-
-    # ── 2. 전일 거래대금 ──────────────────────────────────────
+    # ── 1. 전일 거래대금 ──────────────────────────────────────
     prev_trade_amt = int(basic.get("prev_trade_amount", 0) / 100_000_000)
     if prev_trade_amt >= ADVANCED_FILTER["min_trade_amount"]:
         passed.append(f"전일거래대금({prev_trade_amt:,}억)")
     else:
         failed.append(f"전일거래대금부족({prev_trade_amt:,}억)")
 
-    # ── 3. 거래량 급증 (OR 조건) ──────────────────────────────
-    vol_ratio_1min = get_volume_ratio_1min(code)
-    # 전일 거래량: ohlcv 캐시 우선, 없으면 price API 값
+    # ── 2. 거래량 급증 (전일 대비) ────────────────────────────
     from api.ohlcv import get_prev_ohlcv
     _prev_ohlcv = get_prev_ohlcv(code)
     prev_vol    = (_prev_ohlcv.get("volume", 0) if _prev_ohlcv else 0) or detail.get("prev_volume", 0)
     surge_ratio = volume / prev_vol if prev_vol > 0 else 0
-    min_surge      = REVERSION["volume_surge_ratio"]
+    min_surge   = REVERSION["volume_surge_ratio"]
 
-    vol_1min_ok  = vol_ratio_1min >= ADVANCED_FILTER["min_volume_ratio_1min"]
-    vol_daily_ok = surge_ratio    >= min_surge
-
-    if vol_1min_ok and vol_daily_ok:
-        passed.append(f"거래량급증(전일{surge_ratio:.1f}배+1분봉{vol_ratio_1min:.0f}%)")
-    elif vol_1min_ok:
-        passed.append(f"거래량급증(1분봉{vol_ratio_1min:.0f}%)")
-    elif vol_daily_ok:
+    if surge_ratio >= min_surge:
         passed.append(f"거래량급증(전일{surge_ratio:.1f}배)")
-    elif vol_ratio_1min == 0.0:
+    elif surge_ratio == 0:
         passed.append("거래량급증(확인불가-통과)")
     else:
-        failed.append(f"거래량부족(전일{surge_ratio:.1f}배/1분봉{vol_ratio_1min:.0f}%)")
+        failed.append(f"거래량부족(전일{surge_ratio:.1f}배)")
 
-    # ── 4. 시가총액 ───────────────────────────────────────────
+    # ── 3. 시가총액 ───────────────────────────────────────────
     market_cap = detail.get("market_cap", 0)
     if market_cap > 0:
         if market_cap >= ADVANCED_FILTER["min_market_cap"]:
@@ -208,28 +277,6 @@ def check_reversion_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
             failed.append(f"시가총액미달({market_cap:,}억)")
     else:
         passed.append("시가총액(확인불가-통과)")
-
-    # ── 5. 체결강도 ───────────────────────────────────────────
-    exec_strength = detail.get("exec_strength", 0.0)
-    if exec_strength >= ADVANCED_FILTER["min_execution_strength"]:
-        passed.append(f"체결강도({exec_strength:.1f}%)")
-    elif exec_strength == 0:
-        passed.append("체결강도(확인불가-통과)")
-    else:
-        failed.append(f"체결강도부족({exec_strength:.1f}%)")
-
-    # ── 6. 스토캐스틱 골든크로스 ─────────────────────────────
-    stoch = check_stochastic_signal(code)
-    if stoch == "BUY":
-        passed.append("스토캐스틱(침체탈출)")
-    else:
-        failed.append(f"스토캐스틱(관망/{stoch})")
-
-    # ── 7. MA120 상승장 ───────────────────────────────────────
-    if check_market_phase(code, price):
-        passed.append("MA120(상승장)")
-    else:
-        failed.append("MA120(하락장-진입불가)")
 
     all_passed = len(failed) == 0
     if failed:
@@ -270,23 +317,21 @@ def filter_reversion_candidates(stocks: list[dict]) -> list[dict]:
 
 def score_reversion(stock: dict) -> float:
     """
-    REVERSION 점수 계산.
-      - 거래량 (전일 대비 비율 기준) 40%
-      - 등락률  30%
-      - 체결강도 30%
+    REVERSION 점수 계산 (양쪽 스토캐스틱 + 5분봉 추세 통과 종목 대상).
+      - 전일 거래대금 70%  ← 유동성·안정성 우선
+      - 거래량 배율   30%  ← 당일 관심도
     """
-    change_rate   = stock.get("change_rate", 0)
-    volume        = stock.get("volume", 0)
-    prev_vol      = stock.get("prev_volume", 0)
-    exec_strength = stock.get("exec_strength", 100.0)
+    prev_trade_amount = stock.get("prev_trade_amount", 0)   # 원 단위
+    volume            = stock.get("volume", 0)
+    prev_volume       = stock.get("prev_volume", 1)
 
-    # 전일 대비 비율 기준 (소형주/대형주 형평성)
-    surge_ratio   = volume / prev_vol if prev_vol > 0 else 1.0
-    volume_score  = min(surge_ratio / 5.0, 1.0) * 100    # 5배 = 만점
-    rate_score    = min(change_rate / 15.0, 1.0) * 100   # 15% = 만점 (REVERSION 상한)
-    strength_score = min(exec_strength / 200.0, 1.0) * 100
+    # 전일 거래대금: 3,000억 = 만점 기준
+    trade_score  = min(prev_trade_amount / 300_000_000_000, 1.0) * 100
+    # 거래량 배율: 5배 = 만점 기준
+    surge_ratio  = volume / prev_volume if prev_volume > 0 else 1.0
+    volume_score = min(surge_ratio / 5.0, 1.0) * 100
 
-    return round(volume_score * 0.4 + rate_score * 0.3 + strength_score * 0.3, 2)
+    return round(trade_score * 0.7 + volume_score * 0.3, 2)
 
 
 # ══════════════════════════════════════════
@@ -393,7 +438,11 @@ def run_reversion(stop_event=None, total_budget: int = 0):
             time.sleep(SCAN_INTERVAL)
             continue
 
-        stocks = get_volume_rank(top_n=30)
+        stocks = get_volume_rank(
+            top_n=30,
+            min_change_rate=REVERSION["min_change_rate"],
+            max_change_rate=REVERSION["max_change_rate"],
+        )
         if not stocks:
             time.sleep(SCAN_INTERVAL)
             continue
@@ -413,12 +462,15 @@ def run_reversion(stop_event=None, total_budget: int = 0):
         scores          = [score_reversion(s) for s in top_candidates]
         remaining_slots = MAX_PER_STRAT - reversion_count
         slot_budget     = int(total_budget / MAX_PER_STRAT)
+        # buy_count: 실제 매수할 종목 수 (남은 슬롯 vs 후보 수 중 작은 값)
+        # ← slot_budget * remaining_slots 로 하면 후보 1개일 때 3배 예산 배정 버그 발생
+        buy_count       = min(remaining_slots, len(top_candidates))
         per_budgets     = calc_position_budgets(
-            scores[:remaining_slots],
-            slot_budget * remaining_slots,
+            scores[:buy_count],
+            slot_budget * buy_count,
         )
 
-        for stock, per_budget in zip(top_candidates[:remaining_slots], per_budgets):
+        for stock, per_budget in zip(top_candidates[:buy_count], per_budgets):
             cur_rev_count = sum(
                 1 for p in get_positions().values()
                 if p.get("strategy_type") == STRATEGY_REVERSION

@@ -10,9 +10,10 @@
 # ============================================================
 
 import time
-import logging
+import json
 import threading
 from datetime import datetime
+from pathlib import Path
 
 # ※ check_stochastic_signal, get_ma120 은 순환 참조 방지를 위해
 #   각 함수 내부에서 import 합니다.
@@ -21,9 +22,15 @@ from api.order  import sell_market
 from config     import (
     STOP_LOSS_PCT, PRICE_CHECK_SEC, MARKET_CLOSE, DAILY_LOSS_LIMIT,
     BREAKOUT, REVERSION, STRATEGY_BREAKOUT, STRATEGY_REVERSION,
+    TRADE_COST,
 )
+from utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+# ── 포지션 영속화 파일 경로 ────────────────────────────────────
+_BASE_DIR       = Path(__file__).resolve().parent.parent
+POSITIONS_FILE  = _BASE_DIR / "data" / "positions.json"
+
+logger = get_logger("position")
 
 _positions: dict[str, dict] = {}
 _positions_lock = threading.Lock()   # breakout / reversion / monitor 동시 접근 보호
@@ -33,6 +40,11 @@ _loss_lock      = threading.Lock()   # _daily_realized_loss 동시 갱신 보호
 _daily_realized_loss: int = 0   # 당일 누적 실현손실 (원, 음수)
 _daily_loss_halt    : bool = False  # 한도 초과 시 True → 전략 중단 신호
 
+# ── MA120 체크 주기 관리 ──────────────────────────────────────
+# 현재가 체크(5초)와 분리하여 API 과부하 방지
+MA120_CHECK_INTERVAL = 60   # 60초마다 1회
+_last_ma120_check: dict[str, float] = {}   # {code: timestamp}
+
 FORCE_SELL_TIME = "15:20"
 NO_BUY_AFTER    = "15:20"
 
@@ -40,6 +52,44 @@ NO_BUY_AFTER    = "15:20"
 # ══════════════════════════════════════════
 # 포지션 관리
 # ══════════════════════════════════════════
+
+def _save_positions():
+    """현재 포지션 전체를 파일에 저장 (strategy_type 포함)."""
+    POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    serializable = {}
+    for code, pos in _positions.items():
+        entry = pos.copy()
+        entry["bought_at"] = entry["bought_at"].isoformat() if isinstance(entry.get("bought_at"), datetime) else str(entry.get("bought_at", ""))
+        serializable[code] = entry
+    try:
+        POSITIONS_FILE.write_text(json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.error(f"포지션 파일 저장 실패: {e}")
+
+
+def _load_positions():
+    """재시작 시 파일에서 포지션 복원."""
+    if not POSITIONS_FILE.exists():
+        return
+    try:
+        data = json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
+        for code, entry in data.items():
+            if "bought_at" in entry:
+                try:
+                    entry["bought_at"] = datetime.fromisoformat(entry["bought_at"])
+                except Exception:
+                    entry["bought_at"] = datetime.now()
+            _positions[code] = entry
+            logger.info(
+                f"[{entry.get('name', code)}] 포지션 복원 | "
+                f"전략: {entry.get('strategy_type', '?')} | "
+                f"매입가: {entry.get('avg_price', 0):,}원 | "
+                f"손절가: {entry.get('hard_stop', 0):,}원"
+            )
+        logger.info(f"포지션 파일 복원 완료: {len(data)}개")
+    except Exception as e:
+        logger.error(f"포지션 파일 복원 실패: {e}")
+
 
 def add_position(code: str, name: str, qty: int, avg_price: int,
                  strategy_type: str = STRATEGY_REVERSION):
@@ -72,6 +122,7 @@ def add_position(code: str, name: str, qty: int, avg_price: int,
     }
     with _positions_lock:
         _positions[code] = entry
+        _save_positions()
     logger.info(
         f"[{name}({code})] 포지션 등록 | 전략: {strategy_type} | "
         f"매입가: {avg_price:,}원 | "
@@ -85,6 +136,7 @@ def remove_position(code: str):
         if code in _positions:
             name = _positions[code]["name"]
             del _positions[code]
+            _save_positions()
             logger.info(f"[{name}({code})] 포지션 제거")
 
 
@@ -94,15 +146,28 @@ def get_positions() -> dict:
 
 
 def sync_positions_from_balance():
+    """
+    재시작 시 포지션 복원 순서:
+      1. positions.json (strategy_type 포함) → 우선 복원
+      2. KIS 잔고 API 교차 검증 → 파일에 없는 종목만 fallback 추가
+    """
+    # 1단계: 파일 복원 (strategy_type 보존)
+    _load_positions()
+
+    # 2단계: KIS 잔고 API로 교차 검증
     from api.balance import get_balance
     data = get_balance()
     if not data:
-        logger.warning("잔고 동기화 실패")
+        logger.warning("잔고 API 조회 실패 — 파일 복원 결과만 사용")
         return
     for s in data.get("stocks", []):
         if s["code"] not in _positions:
+            # 파일에 없는 종목 → strategy_type 알 수 없으니 REVERSION 기본값
             add_position(s["code"], s["name"], s["qty"], s["avg_price"])
-            logger.info(f"[{s['name']}] 기존 보유 종목 포지션 복원")
+            logger.warning(
+                f"[{s['name']}] ⚠️ 포지션 파일 미존재 → KIS 잔고 기반 복원 "
+                f"(strategy_type=REVERSION 기본값 적용)"
+            )
 
 
 # ══════════════════════════════════════════
@@ -136,17 +201,25 @@ def record_realized_pnl(code: str, name: str, avg_price: int, sell_price: int, q
     """
     global _daily_realized_loss, _daily_loss_halt
 
-    pnl     = (sell_price - avg_price) * qty   # 실현손익 (원)
-    pnl_pct = (sell_price - avg_price) / avg_price * 100
+    # 수수료/세금 차감
+    buy_fee   = int(avg_price  * qty * TRADE_COST["buy_fee"])
+    sell_fee  = int(sell_price * qty * TRADE_COST["sell_fee"])
+    sell_tax  = int(sell_price * qty * TRADE_COST["sell_tax"])
+    total_fee = buy_fee + sell_fee + sell_tax
+
+    gross_pnl = (sell_price - avg_price) * qty          # 수수료 전
+    net_pnl   = gross_pnl - total_fee                   # 수수료/세금 차감 후
+    pnl_pct   = (sell_price - avg_price) / avg_price * 100
 
     with _loss_lock:
-        _daily_realized_loss += pnl
+        _daily_realized_loss += net_pnl
         current_loss = _daily_realized_loss
 
     logger.info(
         f"[{name}({code})] 실현손익 기록 | "
-        f"손익: {pnl:+,}원 ({pnl_pct:+.2f}%) | "
-        f"당일 누적 실현손익: {current_loss:+,}원"
+        f"총손익: {gross_pnl:+,}원 → 비용({total_fee:,}원) 차감 → "
+        f"순손익: {net_pnl:+,}원 ({pnl_pct:+.2f}%) | "
+        f"당일 누적: {current_loss:+,}원"
     )
 
     # 한도 체크 (손실만, 이익은 무시)
@@ -159,8 +232,23 @@ def record_realized_pnl(code: str, name: str, avg_price: int, sell_price: int, q
             f"🚨 일일 최대 손실 한도 초과! "
             f"누적손실: {current_loss:+,}원 / "
             f"한도: -{DAILY_LOSS_LIMIT['max_loss_amt']:,}원 "
-            f"→ 자동매매 중단"
+            f"→ 신규 매수 중단 + 기존 포지션 손절가 타이트 조정(-0.5%)"
         )
+        # 기존 포지션 손절가를 현재가 -0.5%로 타이트하게 조정
+        # (강제청산 대신 추가 손실만 최소화)
+        with _positions_lock:
+            for pos_code, pos in _positions.items():
+                from api.price import get_current_price
+                info = get_current_price(pos_code)
+                if info and info["price"]:
+                    tight_stop = int(info["price"] * 0.995)   # 현재가 -0.5%
+                    if tight_stop > pos["hard_stop"]:          # 기존 손절보다 높을 때만 상향
+                        old_stop = pos["hard_stop"]
+                        pos["hard_stop"] = tight_stop
+                        logger.warning(
+                            f"[{pos['name']}] 손절가 상향 조정: "
+                            f"{old_stop:,}원 → {tight_stop:,}원 (한도초과 타이트)"
+                        )
         return True   # 중단 신호
 
     # 한도의 80% 도달 시 경고
@@ -205,11 +293,16 @@ def check_position(pos: dict) -> str:
     """
     단일 포지션 체크.
 
+    API 호출 최적화:
+      - 현재가: 매 호출마다 (5초 주기, 손절·익절 즉시 반응)
+      - MA120 : 60초마다 1회 (추세 확인, API 과부하 방지)
+      - 스토캐스틱 매도: 제거 (이미 고정손절·익절·트레일링으로 커버됨)
+
     Returns:
         "hard_stop"     : 1순위 — 고정 손절
-        "ma120_stop"    : 2순위 — MA120 이탈
-        "trailing_stop" : 3순위 — 트레일링 스탑
-        "stoch_sell"    : 4순위 — 스토캐스틱 매도
+        "take_profit"   : 2순위 — 고정 익절
+        "ma120_stop"    : 3순위 — MA120 이탈 (60초 주기)
+        "trailing_stop" : 4순위 — 트레일링 스탑
         "market_close"  : 5순위 — 장마감 강제청산
         "hold"          : 유지
     """
@@ -218,28 +311,26 @@ def check_position(pos: dict) -> str:
     if not info:
         return "hold"
 
-    cur_price  = info["price"]
-    avg_price  = pos["avg_price"]
-    now        = datetime.now().strftime("%H:%M")
+    cur_price     = info["price"]
+    avg_price     = pos["avg_price"]
+    now           = datetime.now().strftime("%H:%M")
+    now_ts        = time.time()
 
     # 고점 갱신 (트레일링 스탑 기준)
     with _positions_lock:
         if code in _positions and cur_price > _positions[code].get("max_price", 0):
             _positions[code]["max_price"] = cur_price
 
-    profit_pct = (cur_price - avg_price) / avg_price * 100
-
-    # ── 전략별 파라미터 (포지션 등록 시 저장된 값 사용) ──────
+    profit_pct     = (cur_price - avg_price) / avg_price * 100
     trail_min_pct  = pos.get("trail_min_pct",  3.0)
     trail_drop_pct = pos.get("trail_drop_pct", 2.0)
-    take_profit    = pos.get("take_profit",    0)     # 0이면 고정익절 미적용
+    take_profit    = pos.get("take_profit",    0)
     strategy_type  = pos.get("strategy_type",  STRATEGY_REVERSION)
 
     logger.debug(
         f"[{pos['name']}({strategy_type})] 현재가: {cur_price:,}원 | "
         f"수익률: {profit_pct:+.2f}% | "
-        f"고점: {pos.get('max_price', cur_price):,}원 | "
-        f"익절가: {take_profit:,}원"
+        f"고점: {pos.get('max_price', cur_price):,}원"
     )
 
     # ── [1순위] 고정 손절 ──────────────────────────────────────
@@ -250,8 +341,7 @@ def check_position(pos: dict) -> str:
         )
         return "hard_stop"
 
-    # ── [1.5순위] 고정 익절 ────────────────────────────────────
-    #   전략별 take_profit 가격 도달 시 즉시 익절
+    # ── [2순위] 고정 익절 ──────────────────────────────────────
     if take_profit > 0 and cur_price >= take_profit:
         logger.info(
             f"[{pos['name']}] 💰 고정익절! "
@@ -259,17 +349,20 @@ def check_position(pos: dict) -> str:
         )
         return "take_profit"
 
-    # ── [2순위] MA120 이탈 ─────────────────────────────────────
-    from strategy.strategy_reversion import get_ma120
-    ma120 = get_ma120(code)
-    if ma120 and cur_price < ma120:
-        logger.info(
-            f"[{pos['name']}] 📉 MA120 이탈! "
-            f"현재가: {cur_price:,} < MA120: {ma120:,.0f} [{strategy_type}]"
-        )
-        return "ma120_stop"
+    # ── [3순위] MA120 이탈 (60초 주기) ────────────────────────
+    last_check = _last_ma120_check.get(code, 0)
+    if now_ts - last_check >= MA120_CHECK_INTERVAL:
+        _last_ma120_check[code] = now_ts
+        from strategy.strategy_reversion import get_ma120
+        ma120 = get_ma120(code)
+        if ma120 and cur_price < ma120:
+            logger.info(
+                f"[{pos['name']}] 📉 MA120 이탈! "
+                f"현재가: {cur_price:,} < MA120: {ma120:,.0f} [{strategy_type}]"
+            )
+            return "ma120_stop"
 
-    # ── [3순위] 트레일링 스탑 (전략별 발동 기준 / 폭 적용) ────
+    # ── [4순위] 트레일링 스탑 ──────────────────────────────────
     if profit_pct >= trail_min_pct:
         max_price = pos.get("max_price", cur_price)
         drop_pct  = (max_price - cur_price) / max_price * 100
@@ -281,13 +374,7 @@ def check_position(pos: dict) -> str:
             )
             return "trailing_stop"
 
-    # ── [4순위] 스토캐스틱 매도 신호 ─────────────────────────────
-    from strategy.strategy_reversion import check_stochastic_signal
-    if check_stochastic_signal(code) == "SELL":
-        logger.info(f"[{pos['name']}] 🟣 스토캐스틱 과열 이탈 매도 [{strategy_type}]")
-        return "stoch_sell"
-
-    # ── [5순위] 장마감 강제청산 ───────────────────────────────────
+    # ── [5순위] 장마감 강제청산 ───────────────────────────────
     if now >= FORCE_SELL_TIME:
         logger.info(
             f"[{pos['name']}] ⏰ 장마감 강제청산 "
@@ -303,7 +390,7 @@ def check_position(pos: dict) -> str:
 # ══════════════════════════════════════════
 
 def execute_sell(pos: dict, reason: str, stop_event=None) -> bool:
-    """매도 실행"""
+    """매도 실행 (최대 3회 재시도)"""
     reason_map = {
         "hard_stop"    : "고정 손절",
         "take_profit"  : "고정 익절",
@@ -312,8 +399,25 @@ def execute_sell(pos: dict, reason: str, stop_event=None) -> bool:
         "stoch_sell"   : "스토캐스틱 매도",
         "market_close" : "장마감 강제청산",
     }
-    label  = reason_map.get(reason, reason)
-    result = sell_market(pos["code"], pos["qty"])
+    label = reason_map.get(reason, reason)
+
+    result = {"success": False}
+    for attempt in range(1, 4):
+        result = sell_market(pos["code"], pos["qty"])
+        if result["success"]:
+            break
+        logger.warning(
+            f"[{pos['name']}] ⚠️ {label} 매도 실패 "
+            f"({attempt}/3) | {result.get('msg', '')}"
+        )
+        if attempt < 3:
+            time.sleep(1)
+    else:
+        logger.critical(
+            f"[{pos['name']}({pos['code']})] 🚨 매도 3회 연속 실패 — "
+            f"수동 개입 필요! 사유: {label}"
+        )
+        return False
 
     if result["success"]:
         logger.info(f"[{pos['name']}] ✅ {label} 완료 | 주문번호: {result['order_no']}")

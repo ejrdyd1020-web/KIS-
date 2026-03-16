@@ -15,6 +15,12 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 
+# Windows 콘솔 cp949 인코딩 문제 해결: stdout/stderr를 utf-8로 강제 설정
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
+
 current_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_path)
 
@@ -78,9 +84,9 @@ def print_startup_info():
     deposit = data.get("deposit", 0) if data else 0
 
     print(f"""
-╔══════════════════════════════════════════════════════╗
-║         KIS 단타 자동매매 프로그램 시작              ║
-╚══════════════════════════════════════════════════════╝
+======================================================
+         KIS 단타 자동매매 프로그램 시작
+======================================================
   시작 시간  : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
   장 운영    : {MARKET_OPEN} ~ {MARKET_CLOSE}
   전략 A     : BREAKOUT  {BREAKOUT['start_time']} ~ {BREAKOUT['end_time']}  (익절 +{BREAKOUT['take_profit_pct']}% / 손절 {BREAKOUT['stop_loss_pct']}%)
@@ -89,8 +95,8 @@ def print_startup_info():
 """)
 
     if data:
-        print(f"  💰 매수가능금액 : {deposit:,}원")
-        print(f"  📦 보유 종목    : {len(data.get('stocks', []))}개")
+        print(f"  [+] 매수가능금액 : {deposit:,}원")
+        print(f"  [*] 보유 종목    : {len(data.get('stocks', []))}개")
         print()
 
 

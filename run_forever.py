@@ -18,6 +18,7 @@
 import sys
 import os
 import time
+import requests
 from datetime import datetime, date, timedelta
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -30,10 +31,10 @@ logger = get_logger("run_forever")
 
 
 # ══════════════════════════════════════════
-# 한국 공휴일 (연도별 하드코딩)
+# 한국 공휴일 (fallback 하드코딩 + KIS API 조회)
 # ══════════════════════════════════════════
 
-KR_HOLIDAYS = {
+_KR_HOLIDAYS_FALLBACK = {
     # 2025년
     "2025-01-01", "2025-01-28", "2025-01-29", "2025-01-30",
     "2025-03-01", "2025-05-05", "2025-05-06", "2025-06-06",
@@ -47,16 +48,64 @@ KR_HOLIDAYS = {
     "2026-10-03", "2026-10-09", "2026-12-25",
 }
 
+# 당일 API 조회 결과 캐시 (날짜 → bool)
+_holiday_cache: dict[str, bool] = {}
+
+
+def _fetch_holiday_from_api(d: date) -> bool | None:
+    """
+    KIS API [국내주식] 휴장일 조회 (CTCA0903R).
+    해당 날짜가 휴장일이면 True, 영업일이면 False, 오류 시 None 반환.
+    """
+    try:
+        from auth import get_headers, get_base_url
+        url = f"{get_base_url()}/uapi/domestic-stock/v1/quotations/chk-holiday"
+        params = {
+            "BASS_DT"  : d.strftime("%Y%m%d"),
+            "CTX_AREA_NK": "",
+            "CTX_AREA_FK": "",
+        }
+        res = requests.get(url, headers=get_headers("CTCA0903R"), params=params, timeout=5)
+        res.raise_for_status()
+        data = res.json()
+        output = data.get("output", [])
+        for item in output:
+            if item.get("bass_dt") == d.strftime("%Y%m%d"):
+                return item.get("bzdy_yn") == "N"   # N=휴장, Y=영업일
+        return None
+    except Exception as e:
+        logger.warning(f"휴장일 API 조회 실패: {e} → fallback 사용")
+        return None
+
 
 def is_trading_day(d: date = None) -> bool:
-    """주말 + 공휴일이면 False (휴장일)"""
+    """주말 + 공휴일이면 False (휴장일).
+    1순위: KIS API 조회 / 실패 시 2순위: 하드코딩 fallback
+    """
     if d is None:
         d = date.today()
-    if d.weekday() >= 5:          # 토(5), 일(6)
+
+    # 주말은 API 불필요
+    if d.weekday() >= 5:
         return False
-    if d.strftime("%Y-%m-%d") in KR_HOLIDAYS:
-        return False
-    return True
+
+    date_str = d.strftime("%Y-%m-%d")
+
+    # 당일 캐시 확인
+    if date_str in _holiday_cache:
+        return not _holiday_cache[date_str]
+
+    # KIS API 조회 시도
+    api_result = _fetch_holiday_from_api(d)
+    if api_result is not None:
+        _holiday_cache[date_str] = api_result
+        logger.info(f"휴장일 API 조회: {date_str} → {'휴장' if api_result else '영업일'}")
+        return not api_result
+
+    # fallback: 하드코딩
+    is_holiday = date_str in _KR_HOLIDAYS_FALLBACK
+    _holiday_cache[date_str] = is_holiday
+    return not is_holiday
 
 
 def next_trading_day(d: date = None) -> date:
@@ -103,48 +152,44 @@ def run_forever():
             wait_until(target_dt)
             continue
 
-        # ── 장 시작(09:00) 전이면 대기 ──────────────────────
-        now       = datetime.now()
-        market_open = datetime(today.year, today.month, today.day, 9, 0, 0)
-
-        if now < market_open:
-            logger.info(f"📅 오늘({today}) 영업일 확인 → 장 시작 09:00까지 대기")
-            wait_until(market_open)
+        # ── 시간대 기준 정의 ─────────────────────────────────
+        now          = datetime.now()
+        premarket_time = datetime(today.year, today.month, today.day, 8, 30, 0)
+        market_open  = datetime(today.year, today.month, today.day, 9, 0, 0)
+        market_close = datetime(today.year, today.month, today.day, 15, 35, 0)
 
         # ── 장 마감 이후면 내일 영업일로 넘김 ───────────────
-        market_close = datetime(today.year, today.month, today.day, 15, 35, 0)
-        if datetime.now() >= market_close:
+        if now >= market_close:
             next_day  = next_trading_day(today)
             target_dt = datetime(next_day.year, next_day.month, next_day.day, 9, 0, 0)
             logger.info(f"⏰ 오늘 장 이미 마감 → 다음 영업일 {next_day} 09:00까지 대기")
             wait_until(target_dt)
             continue
 
-        # ── 장 전 스크리닝 (08:30~09:00) ────────────────────
-        premarket_time = datetime(today.year, today.month, today.day, 8, 30, 0)
-        now_check = datetime.now()
-        if now_check < premarket_time:
-            logger.info(f"⏳ 장 전 스크리닝 08:30까지 대기...")
+        # ── 08:30(장 전 스크리닝) 전이면 대기 ───────────────
+        if now < premarket_time:
+            logger.info(f"📅 오늘({today}) 영업일 확인 → 장 전 스크리닝 08:30까지 대기")
             wait_until(premarket_time)
 
-        logger.info("📋 장 전 스크리닝 시작 (ohlcv 캐시 수집 + watchlist 생성)")
-        try:
-            from auth import get_access_token
-            get_access_token()
-            from premarket import run_premarket_screening, save_watchlist
-            watchlist = run_premarket_screening(top_n=10)
-            if watchlist:
-                save_watchlist(watchlist)
-                logger.info(f"✅ 장 전 스크리닝 완료: {len(watchlist)}개 종목")
-            else:
-                logger.warning("⚠ 장 전 스크리닝 후보 없음 (ohlcv 캐시는 수집됨)")
-        except Exception as e:
-            logger.error(f"🚨 장 전 스크리닝 오류: {e} → 스킵 후 매매 진행")
+        # ── 장 전 스크리닝 (08:30~09:00) ────────────────────
+        if datetime.now() < market_open:
+            logger.info("📋 장 전 스크리닝 시작 (ohlcv 캐시 수집 + watchlist 생성)")
+            try:
+                from auth import get_access_token
+                get_access_token()
+                from premarket import run_premarket_screening, save_watchlist
+                watchlist = run_premarket_screening(top_n=10)
+                if watchlist:
+                    save_watchlist(watchlist)
+                    logger.info(f"✅ 장 전 스크리닝 완료: {len(watchlist)}개 종목")
+                else:
+                    logger.warning("⚠ 장 전 스크리닝 후보 없음 (ohlcv 캐시는 수집됨)")
+            except Exception as e:
+                logger.error(f"🚨 장 전 스크리닝 오류: {e} → 스킵 후 매매 진행")
 
         # ── 09:00까지 남은 시간 대기 ────────────────────────
-        market_open2 = datetime(today.year, today.month, today.day, 9, 0, 0)
-        if datetime.now() < market_open2:
-            wait_until(market_open2)
+        if datetime.now() < market_open:
+            wait_until(market_open)
 
         # ── 자동매매 실행 (오류 시 2분 대기 후 장 중이면 재시작) ──
         RESTART_WAIT = 120   # 2분
@@ -198,8 +243,15 @@ def run_forever():
 
 
 if __name__ == "__main__":
-    try:
-        run_forever()
-    except KeyboardInterrupt:
-        logger.info("\n👋 run_forever 종료 (Ctrl+C)")
-        sys.exit(0)
+    while True:
+        try:
+            run_forever()
+        except KeyboardInterrupt:
+            logger.info("\n👋 run_forever 종료 (Ctrl+C)")
+            sys.exit(0)
+        except Exception as e:
+            import traceback
+            logger.error(f"🚨 run_forever 최상위 예외: {e}")
+            logger.error(traceback.format_exc())
+            logger.info("5분 후 자동 재시작...")
+            time.sleep(300)

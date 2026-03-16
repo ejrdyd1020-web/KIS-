@@ -13,6 +13,19 @@ ORDER_AMOUNT        = TOTAL_BUDGET // 6  # 종목당 기본 투자금액 (동적
 STOP_LOSS_PCT       = -3.0        # 고정 손절 fallback
 TAKE_PROFIT_PCT     = 5.0         # 익절 fallback (A전략 기준)
 
+# ── 거래 비용 설정 ────────────────────────────────────────────
+#   수수료: 매수 0.015% + 매도 0.015%
+#   거래세: 코스피 0.18%, 코스닥 0.18% (2024년 기준)
+#   총 비용: 약 0.21% (수수료 0.03% + 세금 0.18%)
+TRADE_COST = {
+    "buy_fee"   : 0.00015,   # 매수 수수료
+    "sell_fee"  : 0.00015,   # 매도 수수료
+    "sell_tax"  : 0.0018,    # 거래세 (코스피/코스닥 동일)
+}
+TOTAL_TRADE_COST_PCT = (
+    TRADE_COST["buy_fee"] + TRADE_COST["sell_fee"] + TRADE_COST["sell_tax"]
+) * 100   # 약 0.21 (%)
+
 # ── 장 시간 설정 ─────────────────────────────────────────────
 MARKET_OPEN         = "09:00"
 MARKET_CLOSE        = "15:20"
@@ -124,11 +137,10 @@ REVERSION = {
     "ma_filter"         : True,   # MA20 / MA60 / MA120 정배열 확인
     "stoch_filter"      : True,   # 스토캐스틱 침체권 골든크로스 필수
     "scan_interval_sec" : 30,     # 30초 간격 스캔
-    "split_buy"         : True,   # 분할 매수 (양봉 전환 후 2차 진입)
-    "split_ratio"       : 0.5,    # 1차 50% / 2차 50% (추후 조정 가능)
+    "split_buy"         : False,  # 분할 매수 — 미구현 (단일 진입으로 운영)
 
     # 손절 / 익절  — A보다 타이트하게 설정
-    "stop_loss_pct"     : -2.5,   # 고정 손절 (지지선 이탈 기준)
+    "stop_loss_pct"     : -1.5,   # 고정 손절 (R:R = 1:2 기준)
     "take_profit_pct"   : 3.0,    # 고정 익절 (짧은 순환매)
     "trailing_stop"     : {
         "min_profit_pct": 2.0,    # 수익 2% 이상 시 트레일링 작동 (더 이른 보호)
