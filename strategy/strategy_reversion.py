@@ -328,9 +328,22 @@ def filter_reversion_candidates(stocks: list[dict]) -> list[dict]:
 
     from strategy.condition import _bought_codes
 
+    # ETF / 레버리지 / 인버스 제외 키워드
+    ETF_KEYWORDS = (
+        "ETF", "ETN", "KODEX", "TIGER", "KINDEX", "KOSEF", "ARIRANG",
+        "HANARO", "SMART", "SKAI", "SOL", "ACE", "KBSTAR", "FOCUS",
+        "레버리지", "인버스", "2X", "선물", "단기", "국채", "채권",
+    )
+
     for s in stocks:
         code  = s["code"]
+        name  = s.get("name", "")
         price = s.get("price", 0)
+
+        # ETF / 레버리지 / 인버스 제외
+        if any(kw.upper() in name.upper() for kw in ETF_KEYWORDS):
+            logger.debug(f"[{name}] ETF/레버리지 제외")
+            continue
 
         if code in _bought_codes or code in positions:
             continue
