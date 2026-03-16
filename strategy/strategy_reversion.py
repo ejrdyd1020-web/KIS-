@@ -130,7 +130,7 @@ def check_5min_trend(code: str, price: float) -> tuple[bool, str]:
         cur_k = slow_k.iloc[-1]
         if pd.isna(cur_k):
             return False, "5분봉스토캐스틱(산출불가-차단)"
-        k_not_overbought = cur_k < 50
+        k_not_overbought = cur_k < 65   # 50 → 65, 횡보장 대응
 
         if above_ma20 and k_not_overbought:
             return True, f"5분봉(MA20상승+K={cur_k:.0f})"
@@ -179,8 +179,8 @@ def check_stochastic_signal(code: str, cross_window: int = 3) -> str:
         if any(pd.isna(slow_k.iloc[i]) or pd.isna(slow_d.iloc[i]) for i in [-1, -2]):
             return "HOLD"
 
-        # 현재 K가 이미 40 이상이면 반등 많이 진행 → 진입 기회 아님
-        if slow_k.iloc[-1] >= 40:
+        # 현재 K가 이미 55 이상이면 반등 많이 진행 → 진입 기회 아님 (40 → 55 완화)
+        if slow_k.iloc[-1] >= 55:
             return "HOLD"
 
         # 최근 cross_window 봉 이내 골든크로스 감지
@@ -211,16 +211,12 @@ def check_stochastic_signal(code: str, cross_window: int = 3) -> str:
 
 def check_reversion_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
     """
-    REVERSION 전략 고급 필터 (멀티 타임프레임).
+    REVERSION 전략 고급 필터 — 비용 최소화 순서로 재배치.
 
-      [1차 관문] 1분봉 스토캐스틱 침체권 골든크로스 (K<20, 3봉 이내)
-      [2차 관문] 5분봉 추세 확인
-        - 현재가 >= 5분봉 MA20 (상승 추세)
-        - 5분봉 스토캐스틱 K < 50 (상위 TF 과열 아님)
-      [3차 필터]
-        1. 전일 거래대금 300억 이상
-        2. 거래량 급증 (전일 2배 이상)
-        3. 시가총액 100억 이상
+      [1차] 등락률·가격·거래량  → 로컬 계산 (API 0회) — filter_reversion_candidates에서 처리
+      [2차] 거래대금·시총       → 단순 숫자 조회 (API 1회, 가벼움)
+      [3차] 5분봉 MA20+스토캐스틱 → 30봉 (API 1회, 중간)
+      [4차] 1분봉 125봉 1회 수신 → MA120 + 스토캐스틱 동시 계산 (중복 호출 제거)
     """
     passed = []
     failed = []
@@ -228,61 +224,101 @@ def check_reversion_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
     price  = basic.get("price", 0)
     volume = basic.get("volume", 0)
 
-    # ══ 1차 관문: 1분봉 스토캐스틱 골든크로스 ════════════════
-    stoch = check_stochastic_signal(code)
-    if stoch != "BUY":
-        logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: 1분봉스토캐스틱(관망/{stoch})")
-        return False, []
-    passed.append("1분봉스토캐스틱(침체탈출)")
-
-    # ══ 2차 관문: 5분봉 추세 확인 ════════════════════════════
-    trend_ok, trend_msg = check_5min_trend(code, price)
-    if not trend_ok:
-        logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: {trend_msg}")
-        return False, []
-    passed.append(trend_msg)
-
-    # ══ 3차 필터 ══════════════════════════════════════════════
+    # ══ 2차: 거래대금 · 시총 · 거래량 (단순 숫자, 가벼운 API) ══════
     detail = get_current_price(code)
     if not detail:
         return False, []
 
-    # ── 1. 전일 거래대금 ──────────────────────────────────────
+    # ── 전일 거래대금 ─────────────────────────────────────────
     prev_trade_amt = int(basic.get("prev_trade_amount", 0) / 100_000_000)
     if prev_trade_amt >= ADVANCED_FILTER["min_trade_amount"]:
         passed.append(f"전일거래대금({prev_trade_amt:,}억)")
     else:
-        failed.append(f"전일거래대금부족({prev_trade_amt:,}억)")
+        logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: 전일거래대금부족({prev_trade_amt:,}억)")
+        return False, []
 
-    # ── 2. 거래량 급증 (전일 대비) ────────────────────────────
+    # ── 거래량 급증 (전일 대비) ───────────────────────────────
     from api.ohlcv import get_prev_ohlcv
     _prev_ohlcv = get_prev_ohlcv(code)
     prev_vol    = (_prev_ohlcv.get("volume", 0) if _prev_ohlcv else 0) or detail.get("prev_volume", 0)
     surge_ratio = volume / prev_vol if prev_vol > 0 else 0
     min_surge   = REVERSION["volume_surge_ratio"]
 
-    if surge_ratio >= min_surge:
-        passed.append(f"거래량급증(전일{surge_ratio:.1f}배)")
-    elif surge_ratio == 0:
-        passed.append("거래량급증(확인불가-통과)")
+    if surge_ratio >= min_surge or surge_ratio == 0:
+        passed.append(f"거래량급증(전일{surge_ratio:.1f}배)" if surge_ratio > 0 else "거래량급증(확인불가-통과)")
     else:
-        failed.append(f"거래량부족(전일{surge_ratio:.1f}배)")
+        logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: 거래량부족(전일{surge_ratio:.1f}배)")
+        return False, []
 
-    # ── 3. 시가총액 ───────────────────────────────────────────
+    # ── 시가총액 ──────────────────────────────────────────────
     market_cap = detail.get("market_cap", 0)
     if market_cap > 0:
         if market_cap >= ADVANCED_FILTER["min_market_cap"]:
             passed.append(f"시가총액({market_cap:,}억)")
         else:
-            failed.append(f"시가총액미달({market_cap:,}억)")
+            logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: 시가총액미달({market_cap:,}억)")
+            return False, []
     else:
         passed.append("시가총액(확인불가-통과)")
 
-    all_passed = len(failed) == 0
-    if failed:
-        logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: {', '.join(failed)}")
+    # ══ 3차: 5분봉 MA20 + 스토캐스틱 (30봉, 중간 비용) ══════════
+    trend_ok, trend_msg = check_5min_trend(code, price)
+    if not trend_ok:
+        logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: {trend_msg}")
+        return False, []
+    passed.append(trend_msg)
 
-    return all_passed, passed
+    # ══ 4차: 1분봉 125봉 1회 수신 → MA120 + 스토캐스틱 통합 계산 ══
+    # 기존: get_minute_chart(100봉) + get_minute_chart_bulk(125봉) = 2회 호출
+    # 개선: get_minute_chart_bulk(125봉) 1회로 MA120 + 스토캐스틱 동시 처리
+    try:
+        candles = get_minute_chart_bulk(code, need=125)
+        if len(candles) < 25:
+            logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: 1분봉 데이터 부족({len(candles)}개)")
+            return False, []
+
+        df = pd.DataFrame(candles).iloc[::-1].reset_index(drop=True)
+
+        # MA120 계산 (상승장 필터)
+        if MA120_MARKET_FILTER.get("enabled", True) and len(df) >= 120:
+            ma120 = df["close"].rolling(window=120).mean().iloc[-1]
+            if not pd.isna(ma120):
+                if price < float(ma120):
+                    logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: MA120하락({price:,}<{ma120:,.0f})")
+                    return False, []
+                passed.append(f"MA120상승({price:,}≥{ma120:,.0f})")
+
+        # 스토캐스틱 골든크로스 (동일 데이터 재활용, API 추가 호출 없음)
+        slow_k, slow_d = _calc_stochastic_slow(df)
+
+        if any(pd.isna(slow_k.iloc[i]) or pd.isna(slow_d.iloc[i]) for i in [-1, -2]):
+            return False, []
+
+        if slow_k.iloc[-1] >= 55:
+            logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: K반등과다({slow_k.iloc[-1]:.0f}≥55)")
+            return False, []
+
+        cross_window = 3
+        buy_found = False
+        for i in range(-1, -(cross_window + 1), -1):
+            cur_k  = slow_k.iloc[i];  cur_d  = slow_d.iloc[i]
+            prev_k = slow_k.iloc[i-1]; prev_d = slow_d.iloc[i-1]
+            if any(pd.isna(v) for v in [cur_k, cur_d, prev_k, prev_d]):
+                continue
+            if cur_k > cur_d and prev_k <= prev_d and min(prev_k, prev_d) <= 20:
+                buy_found = True
+                passed.append(f"1분봉스토캐스틱(침체탈출,K={cur_k:.0f})")
+                break
+
+        if not buy_found:
+            logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: 1분봉스토캐스틱(골든크로스없음)")
+            return False, []
+
+    except Exception as e:
+        logger.error(f"[{code}] 1분봉 통합 필터 오류: {e}")
+        return False, []
+
+    return True, passed
 
 
 def filter_reversion_candidates(stocks: list[dict]) -> list[dict]:

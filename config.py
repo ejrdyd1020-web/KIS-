@@ -47,7 +47,7 @@ CONDITION = {
 # ── 고급 필터 조건 ────────────────────────────────────────────
 ADVANCED_FILTER = {
     # 거래량 급증 (OR 조건 - 둘 중 하나만 만족해도 통과)
-    "volume_surge_ratio"    : 2.0,    # 전일 대비 누적거래량 2배 이상
+    "volume_surge_ratio"    : 1.3,    # 전일 대비 누적거래량 (2.0 → 1.3, 저변동성 장세 대응)
     "min_volume_ratio_1min" : 500.0,  # 직전 1분봉 대비 현재 1분봉 거래량 500% 이상
 
     # 시가총액 (억원)
@@ -55,7 +55,7 @@ ADVANCED_FILTER = {
     "max_market_cap"        : 99_999_999,
 
     # 거래대금 (억원)
-    "min_trade_amount"      : 300,
+    "min_trade_amount"      : 150,    # 300 → 150억, 종목 풀 확대
 
     # 당일 과열 제외
     "max_day_change_rate"   : 25.0,
@@ -131,9 +131,9 @@ REVERSION = {
     # 매수 조건
     "start_time"        : "09:10",
     "end_time"          : "15:20",
-    "min_change_rate"   : 3.0,    # 등락률 하한
-    "max_change_rate"   : 15.0,   # 등락률 상한 (과열 구간 회피)
-    "volume_surge_ratio": 2.0,    # 전일 대비 거래량 2배 이상
+    "min_change_rate"   : 1.5,    # 등락률 하한 (3.0 → 1.5, 종목 풀 확대)
+    "max_change_rate"   : 20.0,   # 등락률 상한 (15.0 → 20.0, 과열 구간 완화)
+    "volume_surge_ratio": 1.3,    # 전일 대비 거래량 (2.0 → 1.3, 저변동성 장세 대응)
     "ma_filter"         : True,   # MA20 / MA60 / MA120 정배열 확인
     "stoch_filter"      : True,   # 스토캐스틱 침체권 골든크로스 필수
     "scan_interval_sec" : 30,     # 30초 간격 스캔
