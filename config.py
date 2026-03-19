@@ -118,6 +118,7 @@ BREAKOUT = {
 
     # 손절 / 익절
     "stop_loss_pct"     : -3.0,   # 고정 손절 (ATR 동적손절 적용 예정 — 5주차)
+    "pre_stop_pct"      : -2.0,   # 사전 경고 (-2%): 집중 모니터링 전환 (1초 간격)
     "take_profit_pct"   : 5.0,    # 고정 익절
     "trailing_stop"     : {
         "min_profit_pct": 3.0,    # 수익 3% 이상 시 트레일링 작동
@@ -141,6 +142,7 @@ REVERSION = {
 
     # 손절 / 익절  — A보다 타이트하게 설정
     "stop_loss_pct"     : -1.5,   # 고정 손절 (R:R = 1:2 기준)
+    "pre_stop_pct"      : -1.0,   # 사전 경고 (-1%): 집중 모니터링 전환 (1초 간격)
     "take_profit_pct"   : 3.0,    # 고정 익절 (짧은 순환매)
     "trailing_stop"     : {
         "min_profit_pct": 2.0,    # 수익 2% 이상 시 트레일링 작동 (더 이른 보호)

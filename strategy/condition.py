@@ -41,6 +41,17 @@ _BOUGHT_CODES_PATH = os.path.join(
 # 당일 매수 종목 영속성 관리
 # ══════════════════════════════════════════
 
+def remove_from_bought_codes(code: str):
+    """
+    매도 후 _bought_codes에서 제거 → 당일 재진입 허용.
+    재매수 여부는 전략 필터(스토캐스틱, MA120 등)가 결정.
+    """
+    if code in _bought_codes:
+        _bought_codes.discard(code)
+        _save_bought_codes()
+        logger.info(f"[{code}] 매도 완료 → 당일 재진입 허용 (_bought_codes 제거)")
+
+
 def _save_bought_codes():
     """
     _bought_codes를 bought_codes.json에 저장.

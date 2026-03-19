@@ -261,35 +261,63 @@ def check_reversion_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
     else:
         passed.append("시가총액(확인불가-통과)")
 
-    # ══ 3차: 5분봉 MA20 + 스토캐스틱 (30봉, 중간 비용) ══════════
-    trend_ok, trend_msg = check_5min_trend(code, price)
-    if not trend_ok:
-        logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: {trend_msg}")
-        return False, []
-    passed.append(trend_msg)
-
-    # ══ 4차: 1분봉 125봉 1회 수신 → MA120 + 스토캐스틱 통합 계산 ══
-    # 기존: get_minute_chart(100봉) + get_minute_chart_bulk(125봉) = 2회 호출
-    # 개선: get_minute_chart_bulk(125봉) 1회로 MA120 + 스토캐스틱 동시 처리
+    # ══ 3차+4차 통합: 1분봉 160봉 1회 수신 → 5분봉·MA120·스토캐스틱 동시 계산 ══
+    # 기존: get_minute_chart_bulk(160) [3차] + get_minute_chart_bulk(125) [4차] = 최대 11회 API 호출
+    # 개선: get_minute_chart_bulk(160) 1회로 5분봉 집계·MA120·스토캐스틱 모두 처리 → 최대 6회
     try:
-        candles = get_minute_chart_bulk(code, need=125)
-        if len(candles) < 25:
-            logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: 1분봉 데이터 부족({len(candles)}개)")
+        candles_1m = get_minute_chart_bulk(code, need=160)
+        if len(candles_1m) < 25:
+            logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: 1분봉 데이터 부족({len(candles_1m)}개)")
             return False, []
 
-        df = pd.DataFrame(candles).iloc[::-1].reset_index(drop=True)
+        # ── 5분봉 변환 (메모리 집계, API 추가 호출 없음) ──────────
+        candles_5m = []
+        for i in range(0, len(candles_1m) - 4, 5):
+            group = candles_1m[i:i + 5]
+            candles_5m.append({
+                "open"  : group[-1]["open"],
+                "high"  : max(c["high"]   for c in group),
+                "low"   : min(c["low"]    for c in group),
+                "close" : group[0]["close"],
+                "volume": sum(c["volume"] for c in group),
+            })
 
-        # MA120 계산 (상승장 필터)
-        if MA120_MARKET_FILTER.get("enabled", True) and len(df) >= 120:
-            ma120 = df["close"].rolling(window=120).mean().iloc[-1]
+        if len(candles_5m) < 22:
+            logger.warning(f"[{basic.get('name', code)}] 5분봉 데이터 부족({len(candles_5m)}개) → 차단")
+            return False, []
+
+        df_5m = pd.DataFrame(candles_5m).iloc[::-1].reset_index(drop=True)
+
+        # ── 5분봉 MA20 ────────────────────────────────────────────
+        ma20 = df_5m["close"].rolling(window=20).mean().iloc[-1]
+        if pd.isna(ma20):
+            return False, []
+        if price < ma20:
+            logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: 5분봉MA20하락({price:,}<{ma20:,.0f})")
+            return False, []
+        passed.append(f"5분봉MA20상승({price:,}≥{ma20:,.0f})")
+
+        # ── 5분봉 스토캐스틱 K 과열 체크 ─────────────────────────
+        slow_k_5m, _ = _calc_stochastic_slow(df_5m)
+        cur_k_5m = slow_k_5m.iloc[-1]
+        if not pd.isna(cur_k_5m):
+            if cur_k_5m >= 65:
+                logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: 5분봉K과열({cur_k_5m:.0f}≥65)")
+                return False, []
+            passed.append(f"5분봉K정상({cur_k_5m:.0f})")
+
+        # ── 1분봉 MA120 (상승장 필터) ─────────────────────────────
+        df_1m = pd.DataFrame(candles_1m).iloc[::-1].reset_index(drop=True)
+        if MA120_MARKET_FILTER.get("enabled", True) and len(df_1m) >= 120:
+            ma120 = df_1m["close"].rolling(window=120).mean().iloc[-1]
             if not pd.isna(ma120):
                 if price < float(ma120):
                     logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: MA120하락({price:,}<{ma120:,.0f})")
                     return False, []
                 passed.append(f"MA120상승({price:,}≥{ma120:,.0f})")
 
-        # 스토캐스틱 골든크로스 (동일 데이터 재활용, API 추가 호출 없음)
-        slow_k, slow_d = _calc_stochastic_slow(df)
+        # ── 1분봉 스토캐스틱 골든크로스 ──────────────────────────
+        slow_k, slow_d = _calc_stochastic_slow(df_1m)
 
         if any(pd.isna(slow_k.iloc[i]) or pd.isna(slow_d.iloc[i]) for i in [-1, -2]):
             return False, []
@@ -315,7 +343,7 @@ def check_reversion_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
             return False, []
 
     except Exception as e:
-        logger.error(f"[{code}] 1분봉 통합 필터 오류: {e}")
+        logger.error(f"[{code}] 통합 필터 오류: {e}")
         return False, []
 
     return True, passed

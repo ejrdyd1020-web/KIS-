@@ -12,6 +12,7 @@
 import time
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +36,8 @@ logger = get_logger("position")
 _positions: dict[str, dict] = {}
 _positions_lock = threading.Lock()   # breakout / reversion / monitor 동시 접근 보호
 _loss_lock      = threading.Lock()   # _daily_realized_loss 동시 갱신 보호
+_selling_codes: set[str] = set()     # 매도 진행 중 종목 (중복 실행 방지)
+_selling_lock   = threading.Lock()   # _selling_codes 접근 보호
 
 # ── 일일 손실 추적 ────────────────────────────────────────────
 _daily_realized_loss: int = 0   # 당일 누적 실현손실 (원, 음수)
@@ -104,8 +107,10 @@ def add_position(code: str, name: str, qty: int, avg_price: int,
     take_profit_pct = cfg["take_profit_pct"]
     trail_cfg      = cfg["trailing_stop"]
 
-    hard_stop   = int(avg_price * (1 + stop_loss_pct / 100))
-    take_profit = int(avg_price * (1 + take_profit_pct / 100))
+    pre_stop_pct = cfg.get("pre_stop_pct", stop_loss_pct + 1.0)
+    hard_stop    = int(avg_price * (1 + stop_loss_pct  / 100))
+    pre_stop     = int(avg_price * (1 + pre_stop_pct   / 100))
+    take_profit  = int(avg_price * (1 + take_profit_pct / 100))
 
     entry = {
         "code"          : code,
@@ -114,6 +119,9 @@ def add_position(code: str, name: str, qty: int, avg_price: int,
         "avg_price"     : avg_price,
         "max_price"     : avg_price,       # 트레일링 스탑용 고점 추적
         "hard_stop"     : hard_stop,
+        "pre_stop"      : pre_stop,        # 사전 경고가 (집중 모니터링 전환)
+        "pre_stop_mode" : False,           # True = 1초 간격 고속 모니터링 중
+        "pre_order_no"  : "",              # 지정가 손절 예약 주문번호 (비면 미예약)
         "take_profit"   : take_profit,
         "trail_min_pct" : trail_cfg["min_profit_pct"],
         "trail_drop_pct": trail_cfg["drop_pct"],
@@ -126,6 +134,7 @@ def add_position(code: str, name: str, qty: int, avg_price: int,
     logger.info(
         f"[{name}({code})] 포지션 등록 | 전략: {strategy_type} | "
         f"매입가: {avg_price:,}원 | "
+        f"사전경고: {pre_stop:,}원({pre_stop_pct:+.1f}%) | "
         f"손절가: {hard_stop:,}원({stop_loss_pct:+.1f}%) | "
         f"익절가: {take_profit:,}원({take_profit_pct:+.1f}%)"
     )
@@ -289,6 +298,61 @@ def is_buyable_time() -> bool:
 # 포지션 체크 (매도 우선순위)
 # ══════════════════════════════════════════
 
+def _place_pre_order(pos: dict):
+    """
+    -2% 도달 시 hard_stop 가격으로 지정가 매도 예약.
+    성공 시 포지션에 pre_order_no 저장.
+    """
+    from api.order import sell_limit
+    code  = pos["code"]
+    price = pos["hard_stop"]
+    result = sell_limit(code, pos["qty"], price)
+    if result["success"]:
+        with _positions_lock:
+            if code in _positions:
+                _positions[code]["pre_order_no"] = result["order_no"]
+                _positions[code]["pre_stop_mode"] = True
+        logger.warning(
+            f"[{pos['name']}] 🟠 지정가 손절 예약 | "
+            f"{price:,}원 × {pos['qty']}주 | 주문번호: {result['order_no']}"
+        )
+    else:
+        logger.error(f"[{pos['name']}] 지정가 예약 실패 → 1초 모니터링으로 대체: {result['msg']}")
+        with _positions_lock:
+            if code in _positions:
+                _positions[code]["pre_stop_mode"] = True   # 예약 실패해도 집중 모니터링은 유지
+
+
+def _cancel_pre_order(pos: dict):
+    """
+    가격 회복 시 예약된 지정가 매도 취소.
+    취소 성공: pre_order_no / pre_stop_mode 초기화.
+    취소 실패: 이미 체결됐을 가능성 → 호출부에서 포지션 정리.
+    """
+    from api.order import cancel_order
+    code     = pos["code"]
+    order_no = pos.get("pre_order_no", "")
+    if not order_no:
+        return True   # 예약 없음, 정상
+
+    result = cancel_order(order_no, code, pos["qty"])
+    if result["success"]:
+        with _positions_lock:
+            if code in _positions:
+                _positions[code]["pre_order_no"] = ""
+                _positions[code]["pre_stop_mode"] = False
+        logger.info(
+            f"[{pos['name']}] ✅ 지정가 예약 취소 완료 (가격 회복) | 주문번호: {order_no}"
+        )
+        return True
+    else:
+        logger.warning(
+            f"[{pos['name']}] ⚠️ 지정가 예약 취소 실패 | {result['msg']} "
+            f"→ 이미 체결됐을 가능성 있음"
+        )
+        return False   # 취소 실패 → 호출부에서 이미 체결로 간주해 포지션 정리
+
+
 def check_position(pos: dict) -> str:
     """
     단일 포지션 체크.
@@ -341,6 +405,34 @@ def check_position(pos: dict) -> str:
         )
         return "hard_stop"
 
+    # ── [1.5순위] 사전 경고 (pre_stop) ────────────────────────
+    # -2% 진입 → 지정가 손절 예약 + 1초 집중 모니터링
+    if pos.get("pre_stop", 0) and cur_price <= pos["pre_stop"]:
+        if not pos.get("pre_order_no"):
+            # 아직 예약 없음 → 지정가 주문 즉시 제출
+            _place_pre_order(pos)
+            logger.warning(
+                f"[{pos['name']}] 🟠 사전경고 진입! "
+                f"{cur_price:,}원 ({profit_pct:+.2f}%) [{strategy_type}]"
+            )
+        return "pre_stop"
+
+    # ── 가격 회복: pre_stop 위로 올라온 경우 → 예약 취소 ────
+    if pos.get("pre_order_no") and cur_price > pos.get("pre_stop", 0):
+        cancelled = _cancel_pre_order(pos)
+        if not cancelled:
+            # 취소 실패 = 지정가 주문이 이미 체결됨
+            # → hard_stop 가격으로 체결된 것으로 처리
+            logger.warning(
+                f"[{pos['name']}] 지정가 주문 이미 체결됨 (가격 회복 중 취소 실패) "
+                f"→ {pos['hard_stop']:,}원 체결로 포지션 정리"
+            )
+            return "pre_order_filled"
+        logger.info(
+            f"[{pos['name']}] 💹 가격 회복! {cur_price:,}원 ({profit_pct:+.2f}%) "
+            f"→ 지정가 예약 취소, 정상 모니터링 복귀"
+        )
+
     # ── [2순위] 고정 익절 ──────────────────────────────────────
     if take_profit > 0 and cur_price >= take_profit:
         logger.info(
@@ -392,14 +484,32 @@ def check_position(pos: dict) -> str:
 def execute_sell(pos: dict, reason: str, stop_event=None) -> bool:
     """매도 실행 (최대 3회 재시도)"""
     reason_map = {
-        "hard_stop"    : "고정 손절",
-        "take_profit"  : "고정 익절",
-        "ma120_stop"   : "MA120 이탈 손절",
-        "trailing_stop": "트레일링 익절",
-        "stoch_sell"   : "스토캐스틱 매도",
-        "market_close" : "장마감 강제청산",
+        "hard_stop"       : "고정 손절",
+        "pre_order_filled": "지정가 손절 체결",
+        "take_profit"     : "고정 익절",
+        "ma120_stop"      : "MA120 이탈 손절",
+        "trailing_stop"   : "트레일링 익절",
+        "stoch_sell"      : "스토캐스틱 매도",
+        "market_close"    : "장마감 강제청산",
     }
     label = reason_map.get(reason, reason)
+
+    # ── 지정가 주문이 이미 체결된 경우 → 시장가 없이 PnL만 기록 ──
+    if reason == "pre_order_filled":
+        logger.info(f"[{pos['name']}] ✅ {label} | 체결가: {pos['hard_stop']:,}원")
+        _finalize_sell(pos, sell_price=pos["hard_stop"], label=label, stop_event=stop_event)
+        return True
+
+    # ── hard_stop: 기존 지정가 예약이 있으면 먼저 취소 시도 ──────
+    if reason == "hard_stop" and pos.get("pre_order_no"):
+        cancelled = _cancel_pre_order(pos)
+        if not cancelled:
+            # 취소 실패 = 지정가로 이미 체결 → 시장가 중복 매도 방지
+            logger.info(
+                f"[{pos['name']}] hard_stop 도달 but 지정가 이미 체결 → 시장가 생략, 포지션 정리"
+            )
+            _finalize_sell(pos, sell_price=pos["hard_stop"], label="지정가 손절 체결", stop_event=stop_event)
+            return True
 
     result = {"success": False}
     for attempt in range(1, 4):
@@ -421,10 +531,7 @@ def execute_sell(pos: dict, reason: str, stop_event=None) -> bool:
 
     if result["success"]:
         logger.info(f"[{pos['name']}] ✅ {label} 완료 | 주문번호: {result['order_no']}")
-
-        # ── 실현손익 기록 + 일일 한도 체크 ──────────────────
-        # KIS 시장가 주문 응답에는 체결가가 없으므로 현재가를 조회해 사용.
-        # 현재가 조회 실패 시에만 avg_price 로 fallback (PnL 오차 감수).
+        # 시장가 체결가: 현재가 조회 (실패 시 avg_price fallback)
         _price_info = get_current_price(pos["code"])
         sell_price  = _price_info.get("price", 0) if _price_info else 0
         if sell_price <= 0:
@@ -432,51 +539,104 @@ def execute_sell(pos: dict, reason: str, stop_event=None) -> bool:
             logger.warning(
                 f"[{pos['name']}] 체결가 조회 실패 → 매입가({sell_price:,}원)로 PnL 계산 (오차 있음)"
             )
-        halted = record_realized_pnl(
-            code       = pos["code"],
-            name       = pos["name"],
-            avg_price  = pos["avg_price"],
-            sell_price = sell_price,
-            qty        = pos["qty"],
-        )
-        if halted and stop_event:
-            logger.critical("🚨 일일 손실 한도 초과 → stop_event 세팅, 자동매매 중단")
-            stop_event.set()
-
-        remove_position(pos["code"])
+        _finalize_sell(pos, sell_price=sell_price, label=label, stop_event=stop_event)
         return True
     else:
         logger.error(f"[{pos['name']}] ❌ {label} 실패 | {result['msg']}")
         return False
 
 
+def _finalize_sell(pos: dict, sell_price: int, label: str, stop_event=None):
+    """PnL 기록 + 포지션 제거 (시장가/지정가 공통)"""
+    code = pos["code"]
+
+    # ── 중복 호출 방지: 포지션 존재 확인 + 제거를 원자적으로 처리 ──
+    # executor 큐에 쌓인 동일 종목 태스크가 재진입하는 것을 차단한다.
+    with _positions_lock:
+        if code not in _positions:
+            logger.debug(f"[{pos['name']}({code})] _finalize_sell 중복 호출 무시")
+            return
+        del _positions[code]
+        _save_positions()
+
+    halted = record_realized_pnl(
+        code       = code,
+        name       = pos["name"],
+        avg_price  = pos["avg_price"],
+        sell_price = sell_price,
+        qty        = pos["qty"],
+    )
+    if halted and stop_event:
+        logger.critical("🚨 일일 손실 한도 초과 → stop_event 세팅, 자동매매 중단")
+        stop_event.set()
+    try:
+        from strategy.condition import remove_from_bought_codes
+        remove_from_bought_codes(code)
+    except Exception:
+        pass
+
+
 # ══════════════════════════════════════════
 # 모니터링 루프
 # ══════════════════════════════════════════
 
+def _check_and_sell(code: str, pos: dict, stop_event=None):
+    """단일 포지션 체크 + 매도 — 독립 쓰레드에서 실행"""
+    # 이미 매도 진행 중인 종목은 건너뜀
+    with _selling_lock:
+        if code in _selling_codes:
+            return
+    signal = check_position(pos)
+    if signal in ("hold", "pre_stop"):
+        return
+    # 매도 실행 (중복 방지 플래그 ON)
+    with _selling_lock:
+        if code in _selling_codes:
+            return
+        _selling_codes.add(code)
+    try:
+        execute_sell(pos, signal, stop_event=stop_event)
+    finally:
+        with _selling_lock:
+            _selling_codes.discard(code)
+
+
 def run_monitor(stop_event=None):
-    """포지션 모니터링 루프"""
-    logger.info("📡 포지션 모니터링 시작")
+    """포지션 모니터링 루프 — 병렬 처리 + pre_stop 집중 모니터링"""
+    logger.info("📡 포지션 모니터링 시작 (병렬)")
+
+    executor = ThreadPoolExecutor(max_workers=12, thread_name_prefix="pos_monitor")
 
     while True:
         if stop_event and stop_event.is_set():
             logger.info("포지션 모니터링 종료")
+            executor.shutdown(wait=False)
             break
 
-        # ── 일일 손실 한도 초과 시 신규 매수만 차단, 모니터링은 유지 ──
         if is_daily_loss_halted():
             logger.debug("⛔ 일일 손실 한도 초과 상태 — 신규 매수 차단 중 (포지션 모니터링 유지)")
 
         positions = get_positions()
         if not positions:
             logger.debug("보유 포지션 없음 - 대기 중...")
-        else:
-            for code, pos in list(positions.items()):
-                signal = check_position(pos)
-                if signal != "hold":
-                    execute_sell(pos, signal, stop_event=stop_event)
+            time.sleep(PRICE_CHECK_SEC)
+            continue
 
-        time.sleep(PRICE_CHECK_SEC)
+        # ── 모든 포지션 병렬 체크 ────────────────────────────
+        for code, pos in positions.items():
+            executor.submit(_check_and_sell, code, pos, stop_event)
+
+        # ── PRICE_CHECK_SEC 동안 pre_stop 종목만 1초마다 재체크 ──
+        for _ in range(PRICE_CHECK_SEC):
+            time.sleep(1)
+            if stop_event and stop_event.is_set():
+                break
+            fast_positions = {
+                k: v for k, v in get_positions().items()
+                if v.get("pre_stop_mode")
+            }
+            for code, pos in fast_positions.items():
+                executor.submit(_check_and_sell, code, pos, stop_event)
 
 
 def print_positions():

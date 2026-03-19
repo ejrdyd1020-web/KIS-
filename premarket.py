@@ -158,7 +158,7 @@ def get_fluctuation_rank_daily(top_n: int = 50) -> list[dict]:
     def _fetch(market_code: str) -> list[dict]:
         params = {
             "fid_cond_mrkt_div_code": market_code,   # "J"=코스피, "Q"=코스닥
-            "fid_cond_scr_div_code" : "20171",
+            "fid_cond_scr_div_code" : "20170",
             "fid_input_iscd"        : "0000",
             "fid_rank_sort_cls_code": "0",    # 상승률 순
             "fid_input_cnt_1"       : "0",
