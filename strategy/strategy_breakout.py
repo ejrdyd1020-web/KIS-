@@ -186,7 +186,7 @@ def check_breakout_filters(code: str, basic: dict) -> tuple[bool, list[str], lis
             failed.append(f"거래량부족({surge_ratio:.1f}배/{min_surge}배기준/분당환산)")
     else:
         surge_ratio = 0
-        passed.append("거래량급증(확인불가-통과)")
+        failed.append("거래량급증(전일OHLCV없음-차단)")
 
     # ── 4. 전일 고가 돌파 (ohlcv 캐시 우선) ──────────────────
     prev_high = (
@@ -443,9 +443,10 @@ def run_breakout(stop_event=None, total_budget: int = 0):
         # 점수 비율 자금 배분
         remaining_slots = MAX_PER_STRAT - breakout_count
         slot_budget     = int(total_budget / MAX_PER_STRAT)   # 슬롯당 기준 금액
+        actual_count    = len(scores[:remaining_slots])        # 실제 후보 수
         per_budgets     = calc_position_budgets(
             scores[:remaining_slots],
-            slot_budget * remaining_slots,
+            slot_budget * actual_count,                        # 실제 후보 수 기준 예산
         )
 
         SCORE_THRESHOLD = 70.0   # 매수 집행 최소 점수

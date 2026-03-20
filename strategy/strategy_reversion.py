@@ -306,17 +306,20 @@ def check_reversion_filters(code: str, basic: dict) -> tuple[bool, list[str]]:
                 return False, []
             passed.append(f"5분봉K정상({cur_k_5m:.0f})")
 
-        # ── 1분봉 MA120 (상승장 필터) ─────────────────────────────
-        df_1m = pd.DataFrame(candles_1m).iloc[::-1].reset_index(drop=True)
-        if MA120_MARKET_FILTER.get("enabled", True) and len(df_1m) >= 120:
-            ma120 = df_1m["close"].rolling(window=120).mean().iloc[-1]
-            if not pd.isna(ma120):
-                if price < float(ma120):
-                    logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: MA120하락({price:,}<{ma120:,.0f})")
-                    return False, []
-                passed.append(f"MA120상승({price:,}≥{ma120:,.0f})")
+        # ── 일봉 MA20 (상승장 필터) ───────────────────────────────
+        # MA120 이탈 손절 대체: 진입 전에 중기 상승 추세 확인
+        # ohlcv_prev.json 캐시 활용 → 추가 API 호출 없음
+        # ma20 없는 종목(premarket 미수집)은 조건 스킵(Fail-open)
+        daily_ma20 = (_prev_ohlcv.get("ma20") if _prev_ohlcv else None)
+        if daily_ma20:
+            daily_close = (_prev_ohlcv.get("close", 0) if _prev_ohlcv else 0)
+            if daily_close < daily_ma20:
+                logger.debug(f"[{basic.get('name', code)}] REVERSION 탈락: 일봉MA20하락({daily_close:,}<{daily_ma20:,.0f})")
+                return False, []
+            passed.append(f"일봉MA20상승({daily_close:,}≥{daily_ma20:,.0f})")
 
         # ── 1분봉 스토캐스틱 골든크로스 ──────────────────────────
+        df_1m = pd.DataFrame(candles_1m).iloc[::-1].reset_index(drop=True)
         slow_k, slow_d = _calc_stochastic_slow(df_1m)
 
         if any(pd.isna(slow_k.iloc[i]) or pd.isna(slow_d.iloc[i]) for i in [-1, -2]):

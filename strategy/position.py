@@ -43,10 +43,6 @@ _selling_lock   = threading.Lock()   # _selling_codes 접근 보호
 _daily_realized_loss: int = 0   # 당일 누적 실현손실 (원, 음수)
 _daily_loss_halt    : bool = False  # 한도 초과 시 True → 전략 중단 신호
 
-# ── MA120 체크 주기 관리 ──────────────────────────────────────
-# 현재가 체크(5초)와 분리하여 API 과부하 방지
-MA120_CHECK_INTERVAL = 60   # 60초마다 1회
-_last_ma120_check: dict[str, float] = {}   # {code: timestamp}
 
 FORCE_SELL_TIME = "15:20"
 NO_BUY_AFTER    = "15:20"
@@ -359,15 +355,14 @@ def check_position(pos: dict) -> str:
 
     API 호출 최적화:
       - 현재가: 매 호출마다 (5초 주기, 손절·익절 즉시 반응)
-      - MA120 : 60초마다 1회 (추세 확인, API 과부하 방지)
       - 스토캐스틱 매도: 제거 (이미 고정손절·익절·트레일링으로 커버됨)
+      - MA120 이탈 손절: 제거 (일봉 MA20 진입 필터로 대체)
 
     Returns:
         "hard_stop"     : 1순위 — 고정 손절
         "take_profit"   : 2순위 — 고정 익절
-        "ma120_stop"    : 3순위 — MA120 이탈 (60초 주기)
-        "trailing_stop" : 4순위 — 트레일링 스탑
-        "market_close"  : 5순위 — 장마감 강제청산
+        "trailing_stop" : 3순위 — 트레일링 스탑
+        "market_close"  : 4순위 — 장마감 강제청산
         "hold"          : 유지
     """
     code = pos["code"]
@@ -441,20 +436,7 @@ def check_position(pos: dict) -> str:
         )
         return "take_profit"
 
-    # ── [3순위] MA120 이탈 (60초 주기) ────────────────────────
-    last_check = _last_ma120_check.get(code, 0)
-    if now_ts - last_check >= MA120_CHECK_INTERVAL:
-        _last_ma120_check[code] = now_ts
-        from strategy.strategy_reversion import get_ma120
-        ma120 = get_ma120(code)
-        if ma120 and cur_price < ma120:
-            logger.info(
-                f"[{pos['name']}] 📉 MA120 이탈! "
-                f"현재가: {cur_price:,} < MA120: {ma120:,.0f} [{strategy_type}]"
-            )
-            return "ma120_stop"
-
-    # ── [4순위] 트레일링 스탑 ──────────────────────────────────
+    # ── [3순위] 트레일링 스탑 ──────────────────────────────────
     if profit_pct >= trail_min_pct:
         max_price = pos.get("max_price", cur_price)
         drop_pct  = (max_price - cur_price) / max_price * 100
@@ -487,7 +469,6 @@ def execute_sell(pos: dict, reason: str, stop_event=None) -> bool:
         "hard_stop"       : "고정 손절",
         "pre_order_filled": "지정가 손절 체결",
         "take_profit"     : "고정 익절",
-        "ma120_stop"      : "MA120 이탈 손절",
         "trailing_stop"   : "트레일링 익절",
         "stoch_sell"      : "스토캐스틱 매도",
         "market_close"    : "장마감 강제청산",

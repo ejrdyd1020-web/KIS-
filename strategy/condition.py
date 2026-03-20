@@ -43,13 +43,11 @@ _BOUGHT_CODES_PATH = os.path.join(
 
 def remove_from_bought_codes(code: str):
     """
-    매도 후 _bought_codes에서 제거 → 당일 재진입 허용.
-    재매수 여부는 전략 필터(스토캐스틱, MA120 등)가 결정.
+    당일 매수 종목 재진입 완전 차단.
+    손절/익절 무관하게 당일 한 번 매매한 종목은 재매수하지 않음.
+    → 같은 종목 반복 손절 방지
     """
-    if code in _bought_codes:
-        _bought_codes.discard(code)
-        _save_bought_codes()
-        logger.info(f"[{code}] 매도 완료 → 당일 재진입 허용 (_bought_codes 제거)")
+    logger.info(f"[{code}] 매도 완료 → 당일 재진입 차단 유지 (_bought_codes 유지)")
 
 
 def _save_bought_codes():

@@ -108,7 +108,7 @@ BREAKOUT = {
     "start_time"        : "09:00",
     "end_time"          : "09:10",
     "min_change_rate"   : 3.0,    # 등락률 하한 (장전 갭 기준 완화)
-    "max_change_rate"   : 25.0,   # 등락률 상한
+    "max_change_rate"   : 10.0,   # 등락률 상한 (갭 추격매수 방지: 25 → 10)
     "volume_surge_ratio": 3.0,    # 전일 대비 거래량 3배 이상 (강한 모멘텀)
     "exec_strength_max"  : 120.0, # 체결강도 만점 기준 (이상이면 30점 만점)
     "change_rate_max"    : 15.0,  # 등락률 만점 기준 (이상이면 30점 만점)
@@ -141,8 +141,8 @@ REVERSION = {
     "split_buy"         : False,  # 분할 매수 — 미구현 (단일 진입으로 운영)
 
     # 손절 / 익절  — A보다 타이트하게 설정
-    "stop_loss_pct"     : -1.5,   # 고정 손절 (R:R = 1:2 기준)
-    "pre_stop_pct"      : -1.0,   # 사전 경고 (-1%): 집중 모니터링 전환 (1초 간격)
+    "stop_loss_pct"     : -2.0,   # 고정 손절 (-1.5 → -2.0, 노이즈 손절 완화)
+    "pre_stop_pct"      : -1.5,   # 사전 경고 (-1.0 → -1.5, stop과 0.5% 간격 유지)
     "take_profit_pct"   : 3.0,    # 고정 익절 (짧은 순환매)
     "trailing_stop"     : {
         "min_profit_pct": 2.0,    # 수익 2% 이상 시 트레일링 작동 (더 이른 보호)
